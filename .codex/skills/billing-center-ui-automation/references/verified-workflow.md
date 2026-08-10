@@ -1,0 +1,84 @@
+# 已验证 Demo 与页面规则
+
+## 当前基准场景
+
+用例 `YSF-BILL-001`：在“云收费自动化MS1”项目的账单中心，为房间“云收费自动化MS/1/周期性收费房间001”创建 2026-07 周期类账单，并在安全开关开启后批量作废、批量删除本次生成的账单。
+
+基准文件：
+
+- `tests/billing/test_create_periodic_bill.py`
+- `src/pages/portal_page.py`
+- `src/pages/billing_center_page.py`
+- `src/config/settings.py`
+- `scripts/add_bill_demo_to_excel.py`
+- `UI自动化回归测试用例模板_Demo.xlsx`
+
+## 最终确认的创建顺序
+
+1. 打开 `index.html#/Home?masterCustomerId=...`，复用已保存登录状态。
+2. 由最上层向下关闭登录后异步出现的 Element UI 弹窗，并收起右侧“在线客服”。
+3. 进入“云收费/账单中心”，在 `iframe[src*="BillingCenter"]` 中等待创建按钮可见且 loading mask 消失。
+4. 选择项目“云收费自动化MS1”。项目已是目标值时不重复操作；只读输入框可能被 `span.textOverflow` 覆盖。
+5. 点击“创建账单”。
+6. 清空房间输入框后再次点击，等待可见房间树。
+7. 按路径展开目标房间，勾选叶子节点并确认 checkbox 已选中。
+8. 点击房间树弹窗的“确定”。这是必需步骤，只有确认后系统才查询房间收费项；随后断言目标房间 tag 已出现。
+9. 应收日期和最晚缴款日选择执行当天，账期选择目标月份，收费类型选“周期类”，收费项选“周期性收费项”。
+10. 日期/月分弹层操作后按 Escape 收起。收费项通常在收费类型确认后才出现。
+11. 提交前断言实际计费期间属于目标账期。曾发现填 `2026-07` 却生成 8 月期间的风险，不一致时必须停止提交。
+12. 点击创建弹窗“确定”，在账单通知提示中点击“不需要”。
+13. 从唯一结果行读取并记录系统生成的账单编号。
+
+## 最终确认的清理顺序
+
+1. 返回账单中心，按账期起止月份筛选目标账期并触发搜索。
+2. 使用刚创建的账单编号精确定位目标，不能只依赖筛选后“恰好一条”。
+3. 勾选该账单，并收起可能遮挡操作区的“在线客服”。
+4. 点击“更多/批量作废”，不再使用单条作废。
+5. 填写作废理由，例如“UI自动化Demo数据清理”。
+6. 点击“确定作废”，断言状态变为“已作废”。仅完成作废并不代表清理结束。
+7. 再次勾选同一账单，点击“更多/批量删除”。
+8. 删除提示可能不是 ARIA dialog。从包含“删除后不可恢复/确定删除”语义的文本向上寻找带按钮的最近祖先，再点击“确定”。
+9. 搜索并断言该账单编号不再出现在列表。
+
+## 页面定位经验
+
+- 页面含多个 iframe，先锁定账单中心 iframe。
+- `.el-select-dropdown:visible` 在动画期间可能短暂出现两个，选项也可能从 0 个异步变为 1 个；应使用可重试断言等待目标选项唯一出现，不能在固定等待后沿用等待前的数量判断。
+- Element UI 固定列会把同一业务行拆到左、中、右三张表。以账单编号所在的唯一业务行作为权威定位，再分别处理固定列。
+- 登录态可能同时依赖 cookie 和 sessionStorage；恢复后必须断言主页菜单可见。
+- 正确登录 URL 是 `index.html#/login`，不要写成 `index.html/#/login`。
+- 登录后弹窗可能异步叠加，关闭按钮要限定当前可见 dialog/drawer，避免误关业务弹窗。
+- 通知弹窗可能在首次遮挡层清理之后再次异步出现。如果它挡住“在线客服”收起按钮，应重新清理可见弹窗并重试，再使用安全的 DOM 收起兜底。
+- 项目选择组件的只读 input 被显示文本覆盖时，不要对 input 使用强制点击；应点击其 `.jie-project` 外层组件，再根据 `aria-describedby` 限定关联的可见项目树弹窗。
+
+## 数据和安全开关
+
+业务变量包括 `PROJECT_NAME`、`ROOM_PATH`、`CHARGE_TYPE`、`CHARGE_ITEM`、`BILLING_MONTH`、`RECEIVABLE_DATE`、`LATEST_PAYMENT_DATE` 和 `VOID_REASON`。
+
+- `ALLOW_BILL_CREATION=true` 才允许创建。
+- `CLEANUP_CREATED_BILL=true` 表示创建后请求清理。
+- `ALLOW_BILL_DELETION=true` 才允许永久删除。
+- 清理要求后两个开关同时为 true，默认都为 false。
+
+账号密码、storage state 和 token 属于秘密或运行态数据，只在本地安全配置维护，不进入 Skill、代码、Excel 或测试报告。
+
+## 多账号与角色切换
+
+- Excel “账号/角色”列和“账号角色”工作表只维护 `BILLING_ADMIN`、`CASHIER`、`FINANCE_ADMIN` 等稳定别名和权限说明，不维护真实用户名或密码。
+- 本地 `.env` 使用 `<别名大写>_USERNAME`、`<别名大写>_PASSWORD`、`<别名大写>_CAPTCHA` 保存凭据。
+- 使用 `python scripts/save_auth.py --account <别名>` 保存到 `.auth/<别名>/user.json` 和 `session-storage.json`。
+- 单账号用例可用 `@pytest.mark.account("别名")`，整次运行可用 `--account-role <别名>`；未指定时读取 `TEST_ACCOUNT_ROLE`，最后回退到 `default`。
+- 同一端到端用例切换角色时，使用 `account_context("别名")` 创建独立上下文。不要在同一 browser context 中通过退出再登录切换账号。
+- `default` 在新的目录尚未生成时兼容旧 `.auth/user.json`，确保现有 Demo 可继续运行。
+
+## 新场景检查表
+
+- 用户确认的每个“确定/确认/不需要”是否均为独立步骤？
+- 是否进入正确 iframe、弹窗和可见下拉层？
+- 关键选择后是否验证系统实际加载了依赖数据？
+- 是否记录本次创建对象的唯一编号？
+- 清理是否采用“筛选缩小范围 + 唯一编号精确匹配”？
+- 永久删除是否受默认关闭的双重安全开关保护？
+- Excel 的步骤、数据和预期结果是否与代码一致？
+- 是否通过 compile、pytest collect 和 Excel 重建验证？

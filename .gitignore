@@ -1,0 +1,16 @@
+.env
+.auth/
+.tools/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+node_modules/
+test-results/
+playwright-report/
+blob-report/
+artifacts/
+*.trace.zip
+~$*.xlsx
+debug.log
+自动化测试基础数据.md

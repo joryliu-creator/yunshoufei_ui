@@ -1,0 +1,4 @@
+interface:
+  display_name: "账单中心 UI 自动化"
+  short_description: "基于已验证的 Playwright PO 模式生成云收费回归场景"
+  default_prompt: "使用 $billing-center-ui-automation 基于现有 Page Object 新增一个云收费 UI 自动化场景，并保留精确定位、安全清理和结果验证。"
