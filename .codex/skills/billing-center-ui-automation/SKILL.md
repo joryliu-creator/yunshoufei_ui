@@ -13,14 +13,14 @@ description: 为天启标准云收费 Web 应用设计、生成、调整和验�
 
 1. 从仓库根目录工作。
 2. 完整阅读 `references/verified-workflow.md`。
-3. 阅读 `src/pages/`、`src/config/settings.py`、`tests/billing/test_create_periodic_bill.py`、`conftest.py` 和 `.env.example` 中与场景相关的实现。
+3. 阅读 `src/pages/`、`src/config/settings.py`、`src/config/environments.py`、`tests/billing/test_create_periodic_bill.py`、`conftest.py` 和 `.env.<环境>.example` 中与场景相关的实现。
 4. 用户的新步骤与旧用例冲突时，以用户最后确认且已在页面验证的步骤为准，并同步脚本与 Excel。
 
 ## 实施工作流
 
 ### 1. 定义业务契约
 
-整理前置条件、入口、逐步操作、测试数据、账号别名、断言和清理方式。项目、房间、收费类型、收费项、账期、日期和原因等变量进入 `Settings` 与 `.env.example`。Excel 的“账号/角色”列只填写稳定别名；真实账号、密码、令牌和登录状态不得写入代码、Excel 或 Skill。
+先按“环境 → 客户 → 账号/角色 → 可访问项目 → 业务数据”确定归属，再整理前置条件、入口、逐步操作、测试数据、断言和清理方式。环境入口和本地凭据进入 `.env.<环境>`，客户、项目、房间、收费类型、收费项、账期、日期和原因等变量进入 `Settings`、`.env.<环境>.example` 与 Excel。Excel 的“账号/角色”列只填写稳定别名；真实账号、密码、令牌和登录状态不得写入代码、Excel 或 Skill。
 
 ### 2. 扩展 Page Object
 
@@ -35,7 +35,7 @@ description: 为天启标准云收费 Web 应用设计、生成、调整和验�
 - 测试放入 `tests/<模块>/test_<场景>.py`。
 - 创建、作废、删除等用例添加 `side_effect` 标记和默认关闭的安全开关。
 - 创建成功后立即记录系统生成的唯一编号，清理必须用此编号精确定位。
-- 单账号用例使用 `@pytest.mark.account("role")`、`--account-role` 或 `TEST_ACCOUNT_ROLE` 选择登录态；跨角色用例使用 `account_context` 为每个别名创建独立 browser context。
+- 运行时使用 `--test-env`、`--customer-id` 和 `--account-role` 明确环境、客户和账号；单账号用例也可使用 `@pytest.mark.customer("客户号")` 与 `@pytest.mark.account("role")`，跨角色或跨客户用例使用 `account_context(role, customer_id)` 创建独立 browser context。
 - 用 `try/finally` 执行可选清理；只有对象已创建且双重清理开关开启时才能删除。
 - 断言账期、计费期间、状态、编号以及最终不存在等业务结果。
 
@@ -49,7 +49,7 @@ description: 为天启标准云收费 Web 应用设计、生成、调整和验�
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall src tests
-.\.venv\Scripts\python.exe -m pytest --collect-only -q
+.\.venv\Scripts\python.exe -m pytest --collect-only -q --test-env standard1 --customer-id 93537
 .\.venv\Scripts\python.exe scripts\add_bill_demo_to_excel.py
 ```
 
@@ -62,6 +62,7 @@ description: 为天启标准云收费 Web 应用设计、生成、调整和验�
 - 多行、编号不唯一、状态异常或确认文案变化时停止清理并报告。
 - 系统行为与目标不一致时在提交前中止，例如显示 7 月却生成 8 月计费期间。
 - 用户纠正步骤后，同步 Page Object、测试、Excel 和本 Skill 的验证参考。
+- `prod` 环境禁止运行任何带 `side_effect` 标记的用例，也禁止开启创建、清理和永久删除开关；生产环境只允许显式设计的只读巡检。
 
 ## 完成标准
 

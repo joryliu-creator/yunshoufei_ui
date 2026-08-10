@@ -50,7 +50,9 @@ CASE = [
     "CLEANUP_CREATED_BILL=false\n"
     "ALLOW_BILL_DELETION=false\n"
     "VOID_REASON=UI自动化Demo数据清理\n"
-    "ACCOUNT_ROLE=default",
+    "ACCOUNT_ROLE=default\n"
+    "TEST_ENV=standard1\n"
+    "CUSTOMER_ID=93537",
     "1. 创建账单弹窗正常打开\n"
     "2. 房间树点击“确定”后触发收费项查询；房间、收费类型、收费项、账期和日期显示为目标值\n"
     "3. 点击确定后显示账单通知选择提示\n"
@@ -71,25 +73,27 @@ CASE = [
 
 
 DATA_ROWS = [
-    ["DATA-BILL-001", "test", "云收费", "PROJECT_NAME", "云收费自动化MS1", "固定业务数据", "创建账单项目", "项目存在且账号可访问", "否", "无需清理", "有效", ""],
-    ["DATA-BILL-002", "test", "云收费", "ROOM_PATH", "云收费自动化MS/1/周期性收费房间001", "固定业务数据", "创建账单房间", "房间已配置周期性收费项", "否", "账单按环境策略清理", "有效", "选择后必须点击房间树弹窗的“确定”以触发收费项查询"],
-    ["DATA-BILL-003", "test", "云收费", "CHARGE_TYPE", "周期类", "固定业务数据", "收费类型", "类型已启用", "否", "无需清理", "有效", ""],
-    ["DATA-BILL-004", "test", "云收费", "CHARGE_ITEM", "周期性收费项", "固定业务数据", "收费项", "收费项已绑定房间", "否", "无需清理", "有效", ""],
-    ["DATA-BILL-005", "test", "云收费", "BILLING_MONTH", "2026-07", "用例参数", "账期", "不存在重复账单", "是", "执行前更换为可出账账期", "有效", "格式 YYYY-MM"],
-    ["DATA-BILL-006", "test", "云收费", "RECEIVABLE_DATE", "执行当天", "动态数据", "应收日期", "系统日期正确", "是", "无需清理", "有效", "格式 YYYY-MM-DD"],
-    ["DATA-BILL-007", "test", "云收费", "LATEST_PAYMENT_DATE", "执行当天", "动态数据", "最晚缴款日", "系统日期正确", "是", "无需清理", "有效", "格式 YYYY-MM-DD"],
-    ["DATA-BILL-008", "test", "云收费", "CLEANUP_CREATED_BILL", "false", "安全开关", "执行后清理", "仅测试环境允许", "是", "批量作废后批量删除", "有效", "与 ALLOW_BILL_DELETION 同时为 true 才执行"],
-    ["DATA-BILL-009", "test", "云收费", "ALLOW_BILL_DELETION", "false", "安全开关", "允许永久删除", "已确认删除范围", "是", "按账期筛选并按新账单编号唯一定位", "有效", "默认关闭；严禁仅按宽泛筛选条件删除"],
-    ["DATA-BILL-010", "test", "云收费", "VOID_REASON", "UI自动化Demo数据清理", "用例参数", "账单作废原因", "作废前账单为未收", "是", "记录到作废原因", "有效", ""],
-    ["DATA-BILL-011", "test", "云收费", "ACCOUNT_ROLE", "default", "账号别名", "选择用例登录账号", "已保存该别名的登录状态", "是", "无需清理", "有效", "真实账号密码仅维护在本地 .env"],
+    ["DATA-BILL-001", "standard1", "云收费", "PROJECT_NAME", "云收费自动化MS1", "固定业务数据", "客户 93537 的创建账单项目", "项目存在且账号可访问", "否", "无需清理", "有效", ""],
+    ["DATA-BILL-002", "standard1", "云收费", "ROOM_PATH", "云收费自动化MS/1/周期性收费房间001", "固定业务数据", "创建账单房间", "房间已配置周期性收费项", "否", "账单按环境策略清理", "有效", "选择后必须点击房间树弹窗的“确定”以触发收费项查询"],
+    ["DATA-BILL-003", "standard1", "云收费", "CHARGE_TYPE", "周期类", "固定业务数据", "收费类型", "类型已启用", "否", "无需清理", "有效", ""],
+    ["DATA-BILL-004", "standard1", "云收费", "CHARGE_ITEM", "周期性收费项", "固定业务数据", "收费项", "收费项已绑定房间", "否", "无需清理", "有效", ""],
+    ["DATA-BILL-005", "standard1", "云收费", "BILLING_MONTH", "2026-07", "用例参数", "账期", "不存在重复账单", "是", "执行前更换为可出账账期", "有效", "格式 YYYY-MM"],
+    ["DATA-BILL-006", "standard1", "云收费", "RECEIVABLE_DATE", "执行当天", "动态数据", "应收日期", "系统日期正确", "是", "无需清理", "有效", "格式 YYYY-MM-DD"],
+    ["DATA-BILL-007", "standard1", "云收费", "LATEST_PAYMENT_DATE", "执行当天", "动态数据", "最晚缴款日", "系统日期正确", "是", "无需清理", "有效", "格式 YYYY-MM-DD"],
+    ["DATA-BILL-008", "standard1", "云收费", "CLEANUP_CREATED_BILL", "false", "安全开关", "执行后清理", "仅非生产测试环境允许", "是", "批量作废后批量删除", "有效", "与 ALLOW_BILL_DELETION 同时为 true 才执行"],
+    ["DATA-BILL-009", "standard1", "云收费", "ALLOW_BILL_DELETION", "false", "安全开关", "允许永久删除", "已确认删除范围", "是", "按账期筛选并按新账单编号唯一定位", "有效", "默认关闭；严禁仅按宽泛筛选条件删除"],
+    ["DATA-BILL-010", "standard1", "云收费", "VOID_REASON", "UI自动化Demo数据清理", "用例参数", "账单作废原因", "作废前账单为未收", "是", "记录到作废原因", "有效", ""],
+    ["DATA-BILL-011", "standard1", "云收费", "ACCOUNT_ROLE", "default", "账号别名", "选择客户下的用例登录账号", "已保存该环境、客户和别名的登录状态", "是", "无需清理", "有效", "真实账号密码仅维护在本地环境文件"],
+    ["DATA-BILL-012", "standard1", "云收费", "TEST_ENV", "standard1", "环境别名", "选择运行环境", "环境配置存在", "否", "无需清理", "有效", "标准1环境"],
+    ["DATA-BILL-013", "standard1", "云收费", "CUSTOMER_ID", "93537", "客户数据", "选择客户及其项目和账号", "客户存在且账号属于该客户", "否", "无需清理", "有效", "标准1环境客户号"],
 ]
 
 
 ACCOUNT_ROWS = [
-    ["DEFAULT", "test", "本地默认测试账号", "测试管理员", "云收费/账单中心", "创建账单、批量作废、批量删除", "未经授权的生产操作", "是", "兼容现有 Demo；真实凭据仅维护在本地 .env"],
-    ["BILLING_ADMIN", "test", "待本地配置", "收费管理员", "云收费/账单中心", "出账、作废、删除", "超出授权范围的资金操作", "否", "配置凭据并保存登录状态后启用"],
-    ["CASHIER", "test", "待本地配置", "收银员", "云收费/收银台", "缴费", "退款审批、账单删除", "否", "配置凭据并保存登录状态后启用"],
-    ["FINANCE_ADMIN", "test", "待本地配置", "财务管理员", "云收费/实收管理", "退款、退款审核", "未经授权的账单删除", "否", "配置凭据并保存登录状态后启用"],
+    ["DEFAULT", "standard1", "93537", "本地默认测试账号", "测试管理员", "云收费自动化MS1", "云收费/账单中心", "创建账单、批量作废、批量删除", "未经授权的生产操作", "是", "兼容现有 Demo；真实凭据仅维护在本地环境文件"],
+    ["BILLING_ADMIN", "standard1", "93537", "待本地配置", "收费管理员", "待分配", "云收费/账单中心", "出账、作废、删除", "超出授权范围的资金操作", "否", "配置项目权限、凭据和登录状态后启用"],
+    ["CASHIER", "standard1", "93537", "待本地配置", "收银员", "待分配", "云收费/收银台", "缴费", "退款审批、账单删除", "否", "配置项目权限、凭据和登录状态后启用"],
+    ["FINANCE_ADMIN", "standard1", "93537", "待本地配置", "财务管理员", "待分配", "云收费/实收管理", "退款、退款审核", "未经授权的账单删除", "否", "配置项目权限、凭据和登录状态后启用"],
 ]
 
 
@@ -113,6 +117,52 @@ def resolve_source():
             return candidate
     names = "、".join(path.name for path in SOURCE_CANDIDATES)
     raise FileNotFoundError(f"未找到可用 Excel 底稿：{names}")
+
+
+def ensure_account_role_schema(ws):
+    if ws.cell(1, 3).value != "客户号*":
+        ws.insert_cols(3)
+        ws.cell(1, 3)._style = copy(ws.cell(1, 2)._style)
+    if ws.cell(1, 6).value != "可访问项目*":
+        ws.insert_cols(6)
+        ws.cell(1, 6)._style = copy(ws.cell(1, 5)._style)
+    headers = [
+        "账号变量名*",
+        "环境*",
+        "客户号*",
+        "账号标识",
+        "角色名称*",
+        "可访问项目*",
+        "可访问模块*",
+        "允许操作*",
+        "禁止操作*",
+        "是否启用*",
+        "备注",
+    ]
+    for column, value in enumerate(headers, 1):
+        ws.cell(1, column, value)
+
+
+def remove_legacy_account_rows(ws):
+    """移除旧模板中直接维护真实账号变量的示例行。"""
+    for row in range(ws.max_row, 1, -1):
+        if ws.cell(row, 1).value == "TEST_USERNAME":
+            ws.delete_rows(row, 1)
+
+
+def find_account_row(ws, account_alias, environment, customer_id):
+    legacy_match = None
+    for row in range(2, ws.max_row + 1):
+        if ws.cell(row, 1).value != account_alias:
+            continue
+        if (
+            ws.cell(row, 2).value == environment
+            and str(ws.cell(row, 3).value or "") == str(customer_id)
+        ):
+            return row
+        if legacy_match is None:
+            legacy_match = row
+    return legacy_match or first_empty_row(ws)
 
 
 def copy_row_style(ws, source_row, target_row, max_col):
@@ -150,9 +200,11 @@ def main():
         test_data.row_dimensions[data_row].height = 54
 
     accounts = workbook["账号角色"]
+    ensure_account_role_schema(accounts)
+    remove_legacy_account_rows(accounts)
     for item in ACCOUNT_ROWS:
-        account_row = find_or_empty_row(accounts, item[0])
-        copy_row_style(accounts, max(2, account_row - 1), account_row, 9)
+        account_row = find_account_row(accounts, item[0], item[1], item[2])
+        copy_row_style(accounts, max(2, account_row - 1), account_row, 11)
         for column, value in enumerate(item, 1):
             accounts.cell(account_row, column, value)
         accounts.row_dimensions[account_row].height = 42

@@ -65,12 +65,14 @@
 
 ## 多账号与角色切换
 
-- Excel “账号/角色”列和“账号角色”工作表只维护 `BILLING_ADMIN`、`CASHIER`、`FINANCE_ADMIN` 等稳定别名和权限说明，不维护真实用户名或密码。
-- 本地 `.env` 使用 `<别名大写>_USERNAME`、`<别名大写>_PASSWORD`、`<别名大写>_CAPTCHA` 保存凭据。
-- 使用 `python scripts/save_auth.py --account <别名>` 保存到 `.auth/<别名>/user.json` 和 `session-storage.json`。
-- 单账号用例可用 `@pytest.mark.account("别名")`，整次运行可用 `--account-role <别名>`；未指定时读取 `TEST_ACCOUNT_ROLE`，最后回退到 `default`。
-- 同一端到端用例切换角色时，使用 `account_context("别名")` 创建独立上下文。不要在同一 browser context 中通过退出再登录切换账号。
-- `default` 在新的目录尚未生成时兼容旧 `.auth/user.json`，确保现有 Demo 可继续运行。
+- 配置层级固定为“环境 → 客户 → 账号/角色 → 可访问项目 → 业务数据”。当前已确认 `standard1` 入口为 `https://t.jslife.net`，客户号 `93537` 属于该环境；其他环境和客户必须由本地配置显式维护。
+- Excel “账号角色”工作表维护环境、客户号、稳定账号别名、业务角色、可访问项目和权限说明，不维护真实用户名或密码。
+- 本地 `.env.<环境>` 优先使用 `C<客户号>_<别名大写>_USERNAME`、`C<客户号>_<别名大写>_PASSWORD`、`C<客户号>_<别名大写>_CAPTCHA` 保存凭据，例如 `C93537_BILLING_ADMIN_USERNAME`。
+- 使用 `python scripts/save_auth.py --environment <环境> --customer-id <客户号> --account <别名>` 保存到 `.auth/<环境>/<客户号>/<别名>/user.json` 和 `session-storage.json`。
+- 单账号用例可用 `@pytest.mark.customer("客户号")`、`@pytest.mark.account("别名")`，整次运行可用 `--test-env`、`--customer-id`、`--account-role`。
+- 同一端到端用例切换角色或客户时，使用 `account_context("别名", "客户号")` 创建独立上下文。不要在同一 browser context 中通过退出再登录切换账号。
+- `standard1` 在新目录尚未生成时兼容旧 `.auth/<别名>/` 和 `.auth/user.json`，仅用于平滑迁移；新登录态必须按环境和客户隔离。
+- `prod` 不得开启创建账单、自动清理或永久删除开关，带 `side_effect` 标记的用例会被强制跳过。
 
 ## 新场景检查表
 
