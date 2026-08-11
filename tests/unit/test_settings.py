@@ -37,6 +37,28 @@ def test_standard1_default_base_url_uses_http(
     assert created.master_customer_id == "93537"
 
 
+def test_business_values_come_from_excel_not_stale_environment_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        settings_module,
+        "environment_profile",
+        EnvironmentProfile("standard1", Path(".env.standard1")),
+    )
+    monkeypatch.setenv("PROJECT_NAME", "不应被读取的旧值")
+    monkeypatch.setenv("ROOM_PATH", "不应被读取的旧值")
+    monkeypatch.setenv("BILLING_MONTH", "2099-12")
+    monkeypatch.setenv("ALLOW_BILL_CREATION", "false")
+    monkeypatch.setenv("CLEANUP_CREATED_BILL", "false")
+    monkeypatch.setenv("ALLOW_BILL_DELETION", "false")
+
+    created = settings_module.Settings.from_env()
+
+    assert created.project_name == "云收费自动化MS1"
+    assert created.room_path.endswith("周期性收费房间001")
+    assert created.billing_month == "2026-07"
+
+
 def test_other_environment_requires_explicit_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

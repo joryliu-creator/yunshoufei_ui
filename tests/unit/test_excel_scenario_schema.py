@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from scripts.add_bill_demo_to_excel import (
     CASE,
+    OBSOLETE_RUNTIME_PARAMETERS,
     RUNTIME_PARAMETER_HEADERS,
     RUNTIME_PARAMETER_ROWS,
     SCENARIO_HEADERS,
@@ -37,7 +38,7 @@ def test_runtime_parameter_rows_are_focused_on_execution() -> None:
     )
     parameter_names = [row[3] for row in RUNTIME_PARAMETER_ROWS]
     assert len(parameter_names) == len(set(parameter_names))
-    assert "SCENARIO_ID" in parameter_names
+    assert not set(OBSOLETE_RUNTIME_PARAMETERS).intersection(parameter_names)
     assert not {
         "PROJECT_NAME", "ROOM_PATH", "CHARGE_TYPE", "CHARGE_ITEM"
     }.intersection(parameter_names)
@@ -45,8 +46,14 @@ def test_runtime_parameter_rows_are_focused_on_execution() -> None:
 
 def test_case_data_references_scenario_without_copying_business_data() -> None:
     case_data = CASE[10]
-    assert "SCENARIO_ID=YSF-SCENE-PERIODIC-001" in case_data
-    assert "BILLING_MONTH=2026-07" in case_data
-    assert "ACCOUNT_ROLE=default" in case_data
+    assert case_data == "SCENARIO_ID=YSF-SCENE-PERIODIC-001"
     assert "PROJECT_NAME=" not in case_data
     assert "ROOM_PATH=" not in case_data
+
+
+def test_business_variable_names_are_visible_in_scenario_headers() -> None:
+    header_text = "\n".join(header for header, _ in SCENARIO_HEADERS)
+    for variable in (
+        "PROJECT_NAME", "ROOM_PATH", "CHARGE_TYPE", "CHARGE_ITEM"
+    ):
+        assert f"${{{variable}}}" in header_text

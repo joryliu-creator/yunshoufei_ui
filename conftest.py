@@ -20,6 +20,7 @@ from src.config.environments import (
     load_test_environment,
     normalize_test_environment,
 )
+from src.config.excel_data import DEFAULT_WORKBOOK, load_case_reference
 
 
 ROOT = Path(__file__).resolve().parent
@@ -44,6 +45,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="本次测试使用的客户号，例如 93537。",
     )
+    parser.addoption(
+        "--case-id",
+        action="store",
+        default=None,
+        help="Excel 用例编号，例如 YSF-BILL-001。",
+    )
+    parser.addoption(
+        "--scenario-id",
+        action="store",
+        default=None,
+        help="临时覆盖用例引用的收费场景编号。",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -60,6 +73,24 @@ def pytest_configure(config: pytest.Config) -> None:
             )
         except ValueError as exc:
             raise pytest.UsageError(str(exc)) from exc
+    case_id = config.getoption("--case-id") or os.getenv(
+        "TEST_CASE_ID", "YSF-BILL-001"
+    )
+    os.environ["TEST_CASE_ID"] = case_id
+    workbook_path = Path(
+        os.getenv("TEST_DATA_WORKBOOK", str(DEFAULT_WORKBOOK))
+    )
+    try:
+        case_reference = load_case_reference(case_id, workbook_path)
+    except (FileNotFoundError, ValueError) as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    requested_scenario = config.getoption("--scenario-id")
+    if requested_scenario:
+        os.environ["SCENARIO_ID"] = requested_scenario.strip()
+    else:
+        os.environ["SCENARIO_ID"] = case_reference.scenario_id
+    if not config.getoption("--account-role"):
+        os.environ["TEST_ACCOUNT_ROLE"] = case_reference.account_role
 
 
 def pytest_collection_modifyitems(

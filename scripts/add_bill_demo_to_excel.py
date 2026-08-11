@@ -43,9 +43,7 @@ CASE = [
     "11. 如启用清理：返回账单中心，按账期筛选并通过新账单编号唯一定位该账单\n"
     "12. 勾选该账单，点击“更多/批量作废”，填写作废理由，点击“确定作废”，确认账单状态为“已作废”\n"
     "13. 再次勾选该账单，点击“更多/批量删除”，在删除确认提示中点击“确定”，确认列表中不再显示该账单编号",
-    "SCENARIO_ID=YSF-SCENE-PERIODIC-001\n"
-    "BILLING_MONTH=2026-07\n"
-    "ACCOUNT_ROLE=default",
+    "SCENARIO_ID=YSF-SCENE-PERIODIC-001",
     "1. 创建账单弹窗正常打开\n"
     "2. 房间树点击“确定”后触发收费项查询；房间、收费类型、收费项、账期和日期显示为目标值\n"
     "3. 点击确定后显示账单通知选择提示\n"
@@ -74,17 +72,21 @@ RUNTIME_PARAMETER_HEADERS = [
 RUNTIME_PARAMETER_ROWS = [
     ["PARAM-001", "standard1", "93537", "TEST_ENV", "standard1", "运行选择", "选择执行环境", "是", "有效", "命令行 --test-env 可覆盖"],
     ["PARAM-002", "standard1", "93537", "CUSTOMER_ID", "93537", "运行选择", "选择客户及其账号和场景", "是", "有效", "命令行 --customer-id 可覆盖"],
-    ["PARAM-003", "standard1", "93537", "SCENARIO_ID", "YSF-SCENE-PERIODIC-001", "场景引用", "关联收费场景配置", "是", "有效", "不得在此重复维护项目、房间、收费项或收费标准"],
-    ["PARAM-004", "standard1", "93537", "BILLING_MONTH", "2026-07", "业务运行参数", "目标出账账期", "是", "有效", "格式 YYYY-MM；执行前确认不存在重复账单"],
-    ["PARAM-005", "standard1", "93537", "ACCOUNT_ROLE", "default", "账号选择", "选择客户下的登录账号别名", "是", "有效", "真实凭据仅维护在本地环境文件"],
-    ["PARAM-006", "standard1", "93537", "RECEIVABLE_DATE", "执行当天", "日期参数", "应收日期", "是", "有效", "空值或执行当天由代码动态生成"],
-    ["PARAM-007", "standard1", "93537", "LATEST_PAYMENT_DATE", "执行当天", "日期参数", "最晚缴款日", "是", "有效", "空值或执行当天由代码动态生成"],
-    ["PARAM-008", "standard1", "93537", "ALLOW_BILL_CREATION", "false", "安全开关", "允许创建真实测试账单", "是", "有效", "默认关闭；生产环境禁止开启"],
-    ["PARAM-009", "standard1", "93537", "SKIP_BILL_NOTIFICATION", "true", "流程开关", "账单创建后选择不需要通知", "是", "有效", "与当前 Demo 流程一致"],
-    ["PARAM-010", "standard1", "93537", "CLEANUP_CREATED_BILL", "false", "安全开关", "创建后作废并请求清理", "是", "有效", "与永久删除开关同时为 true 才删除"],
-    ["PARAM-011", "standard1", "93537", "ALLOW_BILL_DELETION", "false", "安全开关", "允许永久删除本次账单", "是", "有效", "仅按本次生成的唯一账单编号清理"],
-    ["PARAM-012", "standard1", "93537", "VOID_REASON", "UI自动化Demo数据清理", "清理参数", "账单作废原因", "是", "有效", "记录到作废原因"],
+    ["PARAM-003", "standard1", "93537", "BILLING_MONTH", "2026-07", "业务运行参数", "目标出账账期", "是", "有效", "格式 YYYY-MM；执行前确认不存在重复账单"],
+    ["PARAM-004", "standard1", "93537", "RECEIVABLE_DATE", "执行当天", "日期参数", "应收日期", "是", "有效", "执行当天由代码动态转换为 YYYY-MM-DD"],
+    ["PARAM-005", "standard1", "93537", "LATEST_PAYMENT_DATE", "执行当天", "日期参数", "最晚缴款日", "是", "有效", "执行当天由代码动态转换为 YYYY-MM-DD"],
+    ["PARAM-006", "standard1", "93537", "SKIP_BILL_NOTIFICATION", "true", "流程开关", "账单创建后选择不需要通知", "是", "有效", "与当前 Demo 流程一致"],
+    ["PARAM-007", "standard1", "93537", "VOID_REASON", "UI自动化Demo数据清理", "清理参数", "账单作废原因", "是", "有效", "仅在本地安全开关授权清理后使用"],
 ]
+
+
+OBSOLETE_RUNTIME_PARAMETERS = {
+    "SCENARIO_ID",
+    "ACCOUNT_ROLE",
+    "ALLOW_BILL_CREATION",
+    "CLEANUP_CREATED_BILL",
+    "ALLOW_BILL_DELETION",
+}
 
 
 ACCOUNT_ROWS = [
@@ -100,13 +102,13 @@ SCENARIO_HEADERS = [
     ("场景名称*", "说明该房间主要验证的收费规则。"),
     ("环境*", "standard1、standard2、uat 或 prod。"),
     ("客户号*", "该场景所属客户号。"),
-    ("项目名称*", "账号必须拥有该项目权限。"),
-    ("房间路径*", "建议一个互不兼容的收费标准使用一个专用房间。"),
+    ("项目名称*\n${PROJECT_NAME}", "账号必须拥有该项目权限。"),
+    ("房间路径*\n${ROOM_PATH}", "建议一个互不兼容的收费标准使用一个专用房间。"),
     ("房间业务ID", "如可从接口获取，请同时维护稳定业务 ID。"),
     ("客户名称", "房间收费设置中绑定的客户。"),
     ("账单接收人", "来源于人员基础的账单接收人。"),
-    ("收费类型*", "周期类、仪表类、押金类、临时类或其他。"),
-    ("收费项*", "云收费中配置并绑定到房间的收费项。"),
+    ("收费类型*\n${CHARGE_TYPE}", "周期类、仪表类、押金类、临时类或其他。"),
+    ("收费项*\n${CHARGE_ITEM}", "云收费中配置并绑定到房间的收费项。"),
     ("收费标准*", "本场景要验证的具体收费标准。"),
     ("收费标准编码", "如有稳定编码，建议维护以避免同名。"),
     ("生效开始*", "收费标准对目标账期必须已经生效，格式 YYYY-MM-DD。"),
@@ -133,11 +135,11 @@ SCENARIO_ROWS = [
     [
         "YSF-SCENE-PERIODIC-001", "当前Demo-周期类出账", "standard1", "93537",
         "云收费自动化MS1", "云收费自动化MS/1/周期性收费房间001", "", "", "",
-        "周期类", "周期性收费项", "待补充实际收费标准", "", "", "",
+        "周期类", "周期性收费项", "房间当前绑定收费标准（名称待补充）", "", "", "",
         "按收费标准配置", "请填写实际计算参数", "2026-07", "无减免", "", "0", "",
         "系统配置", "房间已绑定客户、接收人、收费项、收费标准且目标账期有效",
-        "否", "待补充", "否", "", "",
-        "补充收费标准、生效时间、计算参数和预期金额，人工核验后再启用",
+        "否", "已核验", "是", "", "",
+        "当前已核验出账流程；补充标准名称、计算参数和预期金额后用于金额断言",
     ],
     [
         "TEMPLATE-PERIODIC-FIXED", "复制后修改-周期固定金额", "", "", "", "", "", "", "",
@@ -290,6 +292,14 @@ def ensure_runtime_parameter_sheet(workbook):
         for row in range(2, ws.max_row + 1)
         if ws.cell(row, 4).value
     }
+    for row in range(ws.max_row, 1, -1):
+        if ws.cell(row, 4).value in OBSOLETE_RUNTIME_PARAMETERS:
+            ws.delete_rows(row, 1)
+    existing_parameters = {
+        ws.cell(row, 4).value: row
+        for row in range(2, ws.max_row + 1)
+        if ws.cell(row, 4).value
+    }
     for item in RUNTIME_PARAMETER_ROWS:
         parameter_name = item[3]
         if parameter_name in existing_parameters:
@@ -375,6 +385,23 @@ def ensure_charge_scenario_sheet(workbook):
             cell.alignment = Alignment(vertical="top", wrap_text=True)
         ws.row_dimensions[row].height = 72
 
+    # 只迁移 Demo 中由脚本生成的旧占位值；用户后续填写的收费标准、
+    # 金额和备注必须保留，不能因再次生成工作簿而被覆盖。
+    demo_defaults = SCENARIO_ROWS[0]
+    for row in range(2, ws.max_row + 1):
+        if ws.cell(row, 1).value != "YSF-SCENE-PERIODIC-001":
+            continue
+        if ws.cell(row, 12).value in {None, "", "待补充实际收费标准"}:
+            ws.cell(row, 12, demo_defaults[11])
+        if ws.cell(row, 26).value in {None, "", "待补充"}:
+            ws.cell(row, 26, demo_defaults[25])
+        if ws.cell(row, 27).value in {None, "", "否"}:
+            ws.cell(row, 27, demo_defaults[26])
+        old_note = str(ws.cell(row, 30).value or "")
+        if not old_note or old_note.startswith("补充收费标准"):
+            ws.cell(row, 30, demo_defaults[29])
+        break
+
     template_fill = PatternFill("solid", fgColor="E7E6E6")
     pending_fill = PatternFill("solid", fgColor="FFF2CC")
     for row in range(2, ws.max_row + 1):
@@ -429,6 +456,7 @@ def main():
     workbook = load_workbook(source)
 
     cases = workbook["用例清单"]
+    cases.cell(1, 11, "场景引用/覆盖项")
     case_row = find_or_empty_row(cases, CASE[0])
     copy_row_style(cases, max(2, case_row - 1), case_row, 20)
     for column, value in enumerate(CASE, 1):

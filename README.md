@@ -68,6 +68,13 @@ ALLOW_BILL_CREATION=true
 pytest tests/billing/test_create_periodic_bill.py -v --test-env standard1 --customer-id 93537
 ```
 
+默认执行 Excel 中的 `YSF-BILL-001`。运行其他用例或临时切换场景：
+
+```powershell
+pytest tests/billing/test_create_periodic_bill.py -v --test-env standard1 --customer-id 93537 --case-id YSF-BILL-001
+pytest tests/billing/test_create_periodic_bill.py -v --test-env standard1 --customer-id 93537 --scenario-id YSF-SCENE-PERIODIC-001
+```
+
 临时指定该次运行使用的账号：
 
 ```powershell
@@ -110,7 +117,11 @@ CUSTOMER_ID=93537
 
 Excel 的“收费场景配置”工作表用于维护计算类基准数据。一行代表一个独立的“房间 + 收费项 + 收费标准”组合，并记录生效时间、计算参数和预期金额。不同收费标准或互相冲突的配置应使用不同专用房间；只有“维护状态=已核验”且“是否启用=是”的场景才能用于自动化执行。
 
-Excel 数据职责已经拆分：用例清单通过 `SCENARIO_ID` 引用收费场景；“收费场景配置”保存项目、房间、收费项、收费标准、减免和预期金额；“运行参数”只保存账期、日期、账号别名和安全开关。不要在“运行参数”中重复维护项目或收费配置。
+Excel 已是自动化运行时的真实数据源，不只是说明文档。读取链路为：`用例清单（用例编号） → 场景引用/覆盖项（SCENARIO_ID） → 收费场景配置 + 运行参数`。用例使用的账号别名读取同一行的“账号/角色”列。
+
+数据职责保持单一：“收费场景配置”保存项目、房间、收费项、收费标准、减免和预期金额；“运行参数”只保存账期、日期、通知选择和作废原因。字段标题中会同时显示变量名，例如 `房间路径 ${ROOM_PATH}`，操作步骤里的参数可直接在该列找到。不要在多张表重复维护同一值。
+
+`.env.<环境>` 只保存环境地址、客户号、真实账号凭据和危险操作授权。`ALLOW_BILL_CREATION`、`CLEANUP_CREATED_BILL`、`ALLOW_BILL_DELETION` 只能从本地环境文件读取，不能通过 Excel 开启。
 
 生产环境 `prod` 会自动跳过所有带 `side_effect` 标记的用例，并拒绝开启创建、清理和删除开关。
 
@@ -127,8 +138,9 @@ pytest tests/billing/test_create_periodic_bill.py -v --headed --slowmo 300
 ```dotenv
 CLEANUP_CREATED_BILL=true
 ALLOW_BILL_DELETION=true
-VOID_REASON=UI自动化Demo数据清理
 ```
+
+作废原因 `VOID_REASON` 在 Excel“运行参数”中维护；上述两个危险开关仍必须在本地 `.env.<环境>` 显式授权。
 
 清理仅使用本次运行读取到的账单编号定位。定位不到或匹配到多条时会立即失败，不会扩大删除范围。
 

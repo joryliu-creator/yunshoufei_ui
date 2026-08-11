@@ -11,6 +11,7 @@ from src.pages.portal_page import PortalPage
 
 
 pytestmark = [
+    pytest.mark.scenario("YSF-SCENE-PERIODIC-001"),
     pytest.mark.side_effect,
     pytest.mark.skipif(
         not settings.allow_bill_creation,
