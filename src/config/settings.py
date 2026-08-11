@@ -72,7 +72,7 @@ class Settings:
         base_url = _environment_value(
             "BASE_URL",
             environment,
-            "https://t.jslife.net/jportal/index.html",
+            "http://t.jslife.net/jportal/index.html",
         )
         customer_id = (
             os.getenv("CUSTOMER_ID", "").strip()

@@ -65,7 +65,7 @@
 
 ## 多账号与角色切换
 
-- 配置层级固定为“环境 → 客户 → 账号/角色 → 可访问项目 → 业务数据”。当前已确认 `standard1` 入口为 `https://t.jslife.net`，客户号 `93537` 属于该环境；其他环境和客户必须由本地配置显式维护。
+- 配置层级固定为“环境 → 客户 → 账号/角色 → 可访问项目 → 业务数据”。当前已确认 `standard1` 使用 HTTP，入口为 `http://t.jslife.net`，客户号 `93537` 属于该环境；其他环境和客户必须由本地配置显式维护。
 - Excel “账号角色”工作表维护环境、客户号、稳定账号别名、业务角色、可访问项目和权限说明，不维护真实用户名或密码。
 - 本地 `.env.<环境>` 优先使用 `C<客户号>_<别名大写>_USERNAME`、`C<客户号>_<别名大写>_PASSWORD`、`C<客户号>_<别名大写>_CAPTCHA` 保存凭据，例如 `C93537_BILLING_ADMIN_USERNAME`。
 - 使用 `python scripts/save_auth.py --environment <环境> --customer-id <客户号> --account <别名>` 保存到 `.auth/<环境>/<客户号>/<别名>/user.json` 和 `session-storage.json`。

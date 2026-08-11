@@ -96,7 +96,7 @@ def test_cross_role_flow(account_context):
 
 ```dotenv
 TEST_ENV=standard1
-BASE_URL=https://t.jslife.net/jportal/index.html
+BASE_URL=http://t.jslife.net/jportal/index.html
 CUSTOMER_ID=93537
 ```
 
