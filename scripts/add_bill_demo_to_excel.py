@@ -43,19 +43,9 @@ CASE = [
     "11. 如启用清理：返回账单中心，按账期筛选并通过新账单编号唯一定位该账单\n"
     "12. 勾选该账单，点击“更多/批量作废”，填写作废理由，点击“确定作废”，确认账单状态为“已作废”\n"
     "13. 再次勾选该账单，点击“更多/批量删除”，在删除确认提示中点击“确定”，确认列表中不再显示该账单编号",
-    "PROJECT_NAME=云收费自动化MS1\n"
-    "ROOM_PATH=云收费自动化MS/1/周期性收费房间001\n"
-    "CHARGE_TYPE=周期类\n"
-    "CHARGE_ITEM=周期性收费项\n"
+    "SCENARIO_ID=YSF-SCENE-PERIODIC-001\n"
     "BILLING_MONTH=2026-07\n"
-    "RECEIVABLE_DATE=执行当天\n"
-    "LATEST_PAYMENT_DATE=执行当天\n"
-    "CLEANUP_CREATED_BILL=false\n"
-    "ALLOW_BILL_DELETION=false\n"
-    "VOID_REASON=UI自动化Demo数据清理\n"
-    "ACCOUNT_ROLE=default\n"
-    "TEST_ENV=standard1\n"
-    "CUSTOMER_ID=93537",
+    "ACCOUNT_ROLE=default",
     "1. 创建账单弹窗正常打开\n"
     "2. 房间树点击“确定”后触发收费项查询；房间、收费类型、收费项、账期和日期显示为目标值\n"
     "3. 点击确定后显示账单通知选择提示\n"
@@ -75,20 +65,25 @@ CASE = [
 ]
 
 
-DATA_ROWS = [
-    ["DATA-BILL-001", "standard1", "云收费", "PROJECT_NAME", "云收费自动化MS1", "固定业务数据", "客户 93537 的创建账单项目", "项目存在且账号可访问", "否", "无需清理", "有效", ""],
-    ["DATA-BILL-002", "standard1", "云收费", "ROOM_PATH", "云收费自动化MS/1/周期性收费房间001", "固定业务数据", "创建账单房间", "房间已配置周期性收费项", "否", "账单按环境策略清理", "有效", "选择后必须点击房间树弹窗的“确定”以触发收费项查询"],
-    ["DATA-BILL-003", "standard1", "云收费", "CHARGE_TYPE", "周期类", "固定业务数据", "收费类型", "类型已启用", "否", "无需清理", "有效", ""],
-    ["DATA-BILL-004", "standard1", "云收费", "CHARGE_ITEM", "周期性收费项", "固定业务数据", "收费项", "收费项已绑定房间", "否", "无需清理", "有效", ""],
-    ["DATA-BILL-005", "standard1", "云收费", "BILLING_MONTH", "2026-07", "用例参数", "账期", "不存在重复账单", "是", "执行前更换为可出账账期", "有效", "格式 YYYY-MM"],
-    ["DATA-BILL-006", "standard1", "云收费", "RECEIVABLE_DATE", "执行当天", "动态数据", "应收日期", "系统日期正确", "是", "无需清理", "有效", "格式 YYYY-MM-DD"],
-    ["DATA-BILL-007", "standard1", "云收费", "LATEST_PAYMENT_DATE", "执行当天", "动态数据", "最晚缴款日", "系统日期正确", "是", "无需清理", "有效", "格式 YYYY-MM-DD"],
-    ["DATA-BILL-008", "standard1", "云收费", "CLEANUP_CREATED_BILL", "false", "安全开关", "执行后清理", "仅非生产测试环境允许", "是", "批量作废后批量删除", "有效", "与 ALLOW_BILL_DELETION 同时为 true 才执行"],
-    ["DATA-BILL-009", "standard1", "云收费", "ALLOW_BILL_DELETION", "false", "安全开关", "允许永久删除", "已确认删除范围", "是", "按账期筛选并按新账单编号唯一定位", "有效", "默认关闭；严禁仅按宽泛筛选条件删除"],
-    ["DATA-BILL-010", "standard1", "云收费", "VOID_REASON", "UI自动化Demo数据清理", "用例参数", "账单作废原因", "作废前账单为未收", "是", "记录到作废原因", "有效", ""],
-    ["DATA-BILL-011", "standard1", "云收费", "ACCOUNT_ROLE", "default", "账号别名", "选择客户下的用例登录账号", "已保存该环境、客户和别名的登录状态", "是", "无需清理", "有效", "真实账号密码仅维护在本地环境文件"],
-    ["DATA-BILL-012", "standard1", "云收费", "TEST_ENV", "standard1", "环境别名", "选择运行环境", "环境配置存在", "否", "无需清理", "有效", "标准1环境"],
-    ["DATA-BILL-013", "standard1", "云收费", "CUSTOMER_ID", "93537", "客户数据", "选择客户及其项目和账号", "客户存在且账号属于该客户", "否", "无需清理", "有效", "标准1环境客户号"],
+RUNTIME_PARAMETER_HEADERS = [
+    "参数编号*", "环境*", "客户号", "参数名*", "默认值", "参数类型*",
+    "用途*", "是否可覆盖*", "维护状态*", "备注",
+]
+
+
+RUNTIME_PARAMETER_ROWS = [
+    ["PARAM-001", "standard1", "93537", "TEST_ENV", "standard1", "运行选择", "选择执行环境", "是", "有效", "命令行 --test-env 可覆盖"],
+    ["PARAM-002", "standard1", "93537", "CUSTOMER_ID", "93537", "运行选择", "选择客户及其账号和场景", "是", "有效", "命令行 --customer-id 可覆盖"],
+    ["PARAM-003", "standard1", "93537", "SCENARIO_ID", "YSF-SCENE-PERIODIC-001", "场景引用", "关联收费场景配置", "是", "有效", "不得在此重复维护项目、房间、收费项或收费标准"],
+    ["PARAM-004", "standard1", "93537", "BILLING_MONTH", "2026-07", "业务运行参数", "目标出账账期", "是", "有效", "格式 YYYY-MM；执行前确认不存在重复账单"],
+    ["PARAM-005", "standard1", "93537", "ACCOUNT_ROLE", "default", "账号选择", "选择客户下的登录账号别名", "是", "有效", "真实凭据仅维护在本地环境文件"],
+    ["PARAM-006", "standard1", "93537", "RECEIVABLE_DATE", "执行当天", "日期参数", "应收日期", "是", "有效", "空值或执行当天由代码动态生成"],
+    ["PARAM-007", "standard1", "93537", "LATEST_PAYMENT_DATE", "执行当天", "日期参数", "最晚缴款日", "是", "有效", "空值或执行当天由代码动态生成"],
+    ["PARAM-008", "standard1", "93537", "ALLOW_BILL_CREATION", "false", "安全开关", "允许创建真实测试账单", "是", "有效", "默认关闭；生产环境禁止开启"],
+    ["PARAM-009", "standard1", "93537", "SKIP_BILL_NOTIFICATION", "true", "流程开关", "账单创建后选择不需要通知", "是", "有效", "与当前 Demo 流程一致"],
+    ["PARAM-010", "standard1", "93537", "CLEANUP_CREATED_BILL", "false", "安全开关", "创建后作废并请求清理", "是", "有效", "与永久删除开关同时为 true 才删除"],
+    ["PARAM-011", "standard1", "93537", "ALLOW_BILL_DELETION", "false", "安全开关", "允许永久删除本次账单", "是", "有效", "仅按本次生成的唯一账单编号清理"],
+    ["PARAM-012", "standard1", "93537", "VOID_REASON", "UI自动化Demo数据清理", "清理参数", "账单作废原因", "是", "有效", "记录到作废原因"],
 ]
 
 
@@ -118,7 +113,7 @@ SCENARIO_HEADERS = [
     ("生效结束", "长期有效可留空，格式 YYYY-MM-DD。"),
     ("计费公式*", "使用业务可读公式，例如 面积×单价。"),
     ("计算参数*", "每行一个 KEY=VALUE，例如 AREA=80 和 UNIT_PRICE=2.5。"),
-    ("测试账期*", "用于该场景回归的可出账账期，格式 YYYY-MM。"),
+    ("建议测试账期", "仅作为场景建议值；实际执行账期由运行参数 BILLING_MONTH 决定。"),
     ("减免配置", "填写无减免、固定金额减免、比例减免等规则及参数。"),
     ("预期原始金额*", "人工确认或独立计算得出的金额，不要复制系统实际结果。"),
     ("预期减免金额", "无减免时填写 0。"),
@@ -257,16 +252,109 @@ def copy_row_style(ws, source_row, target_row, max_col):
             target.border = copy(source.border)
 
 
+def ensure_runtime_parameter_sheet(workbook):
+    if "运行参数" in workbook.sheetnames:
+        ws = workbook["运行参数"]
+    elif "测试数据" in workbook.sheetnames:
+        ws = workbook["测试数据"]
+        ws.title = "运行参数"
+    else:
+        ws = workbook.create_sheet("运行参数")
+
+    migrating = ws.cell(1, 1).value != RUNTIME_PARAMETER_HEADERS[0]
+    legacy_values = {}
+    if migrating:
+        for row in range(2, ws.max_row + 1):
+            parameter_name = ws.cell(row, 4).value
+            if parameter_name:
+                legacy_values[parameter_name] = ws.cell(row, 5).value
+        ws.delete_rows(1, ws.max_row)
+        ws.data_validations.dataValidation = []
+
+    header_fill = PatternFill("solid", fgColor="375623")
+    for column, header in enumerate(RUNTIME_PARAMETER_HEADERS, 1):
+        cell = ws.cell(1, column, header)
+        cell.fill = header_fill
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(
+            horizontal="center", vertical="center", wrap_text=True
+        )
+    if ws.max_column > len(RUNTIME_PARAMETER_HEADERS):
+        ws.delete_cols(
+            len(RUNTIME_PARAMETER_HEADERS) + 1,
+            ws.max_column - len(RUNTIME_PARAMETER_HEADERS),
+        )
+
+    existing_parameters = {
+        ws.cell(row, 4).value: row
+        for row in range(2, ws.max_row + 1)
+        if ws.cell(row, 4).value
+    }
+    for item in RUNTIME_PARAMETER_ROWS:
+        parameter_name = item[3]
+        if parameter_name in existing_parameters:
+            continue
+        row = first_empty_row(ws)
+        values = list(item)
+        if parameter_name in legacy_values:
+            values[4] = legacy_values[parameter_name]
+        for column, value in enumerate(values, 1):
+            ws.cell(row, column, value)
+
+    safety_fill = PatternFill("solid", fgColor="FCE4D6")
+    selection_fill = PatternFill("solid", fgColor="DDEBF7")
+    for row in range(2, ws.max_row + 1):
+        parameter_type = ws.cell(row, 6).value
+        fill = safety_fill if parameter_type == "安全开关" else None
+        if parameter_type in {"运行选择", "场景引用", "账号选择"}:
+            fill = selection_fill
+        for column in range(1, len(RUNTIME_PARAMETER_HEADERS) + 1):
+            cell = ws.cell(row, column)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if fill:
+                cell.fill = fill
+        ws.row_dimensions[row].height = 42
+
+    widths = [15, 13, 14, 28, 25, 18, 34, 16, 16, 48]
+    for column, width in enumerate(widths, 1):
+        ws.column_dimensions[ws.cell(1, column).column_letter].width = width
+    ws.row_dimensions[1].height = 36
+    ws.freeze_panes = "D2"
+    ws.auto_filter.ref = f"A1:J{max(ws.max_row, 2)}"
+    ws.sheet_properties.tabColor = "70AD47"
+
+    if migrating:
+        validations = [
+            ("B2:B1000", '"standard1,standard2,uat,prod"'),
+            ("H2:H1000", '"是,否"'),
+            ("I2:I1000", '"有效,待补充,已停用"'),
+        ]
+        for cell_range, options in validations:
+            validation = DataValidation(
+                type="list", formula1=options, allow_blank=True
+            )
+            ws.add_data_validation(validation)
+            validation.add(cell_range)
+    return ws
+
+
 def ensure_charge_scenario_sheet(workbook):
     sheet_name = "收费场景配置"
     created = sheet_name not in workbook.sheetnames
     ws = workbook.create_sheet(sheet_name) if created else workbook[sheet_name]
 
-    header_fill = PatternFill("solid", fgColor="1F4E78")
     header_font = Font(color="FFFFFF", bold=True)
+    group_fills = {
+        range(1, 5): PatternFill("solid", fgColor="1F4E78"),
+        range(5, 16): PatternFill("solid", fgColor="0F6B78"),
+        range(16, 24): PatternFill("solid", fgColor="C55A11"),
+        range(24, 31): PatternFill("solid", fgColor="548235"),
+    }
     for column, (header, help_text) in enumerate(SCENARIO_HEADERS, 1):
         cell = ws.cell(1, column, header)
-        cell.fill = header_fill
+        cell.fill = next(
+            fill for columns, fill in group_fills.items() if column in columns
+        )
         cell.font = header_font
         cell.alignment = Alignment(
             horizontal="center", vertical="center", wrap_text=True
@@ -287,6 +375,20 @@ def ensure_charge_scenario_sheet(workbook):
             cell.alignment = Alignment(vertical="top", wrap_text=True)
         ws.row_dimensions[row].height = 72
 
+    template_fill = PatternFill("solid", fgColor="E7E6E6")
+    pending_fill = PatternFill("solid", fgColor="FFF2CC")
+    for row in range(2, ws.max_row + 1):
+        status = ws.cell(row, 26).value
+        fill = template_fill if status == "模板" else None
+        if status == "待补充":
+            fill = pending_fill
+        for column in range(1, len(SCENARIO_HEADERS) + 1):
+            cell = ws.cell(row, column)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if fill:
+                cell.fill = fill
+        ws.row_dimensions[row].height = 72
+
     widths = {
         "A": 27, "B": 25, "C": 13, "D": 14, "E": 23, "F": 38,
         "G": 17, "H": 20, "I": 20, "J": 13, "K": 22, "L": 25,
@@ -297,8 +399,11 @@ def ensure_charge_scenario_sheet(workbook):
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
     ws.row_dimensions[1].height = 42
-    ws.freeze_panes = "A2"
+    ws.freeze_panes = "G2"
     ws.auto_filter.ref = f"A1:AD{max(ws.max_row, 2)}"
+    ws.column_dimensions["G"].hidden = True
+    ws.column_dimensions["M"].hidden = True
+    ws.sheet_properties.tabColor = "5B9BD5"
 
     if created:
         validations = [
@@ -330,13 +435,7 @@ def main():
         cases.cell(case_row, column, value)
     cases.row_dimensions[case_row].height = 210
 
-    test_data = workbook["测试数据"]
-    for item in DATA_ROWS:
-        data_row = find_or_empty_row(test_data, item[0])
-        copy_row_style(test_data, max(2, data_row - 1), data_row, 12)
-        for column, value in enumerate(item, 1):
-            test_data.cell(data_row, column, value)
-        test_data.row_dimensions[data_row].height = 54
+    runtime_parameters = ensure_runtime_parameter_sheet(workbook)
 
     accounts = workbook["账号角色"]
     ensure_account_role_schema(accounts)
@@ -350,11 +449,22 @@ def main():
 
     scenarios = ensure_charge_scenario_sheet(workbook)
 
+    preferred_order = [
+        "用例清单", "收费场景配置", "运行参数", "账号角色",
+        "填写指南", "字段说明", "下拉选项",
+    ]
+    order = {name: index for index, name in enumerate(preferred_order)}
+    workbook._sheets.sort(
+        key=lambda sheet: order.get(sheet.title, len(preferred_order))
+    )
+    if "下拉选项" in workbook.sheetnames:
+        workbook["下拉选项"].sheet_state = "hidden"
+
     workbook.save(OUTPUT)
     print(f"source={source}")
     print(f"created={OUTPUT}")
     print(f"case_row={case_row}, case_id={cases.cell(case_row, 1).value}")
-    print(f"test_data_rows={len(DATA_ROWS)}")
+    print(f"runtime_parameter_rows={runtime_parameters.max_row - 1}")
     print(f"account_rows={len(ACCOUNT_ROWS)}")
     print(f"scenario_rows={scenarios.max_row - 1}")
 
