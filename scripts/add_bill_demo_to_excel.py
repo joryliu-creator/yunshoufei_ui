@@ -6,6 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".tools" / "python"))
 
 from openpyxl import load_workbook
+from openpyxl.comments import Comment
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.worksheet.datavalidation import DataValidation
 
 
 OUTPUT = ROOT / "UI自动化回归测试用例模板_Demo.xlsx"
@@ -97,6 +100,80 @@ ACCOUNT_ROWS = [
 ]
 
 
+SCENARIO_HEADERS = [
+    ("场景编号*", "稳定且唯一，例如 PERIODIC_AREA_001；测试用例通过此编号引用场景。"),
+    ("场景名称*", "说明该房间主要验证的收费规则。"),
+    ("环境*", "standard1、standard2、uat 或 prod。"),
+    ("客户号*", "该场景所属客户号。"),
+    ("项目名称*", "账号必须拥有该项目权限。"),
+    ("房间路径*", "建议一个互不兼容的收费标准使用一个专用房间。"),
+    ("房间业务ID", "如可从接口获取，请同时维护稳定业务 ID。"),
+    ("客户名称", "房间收费设置中绑定的客户。"),
+    ("账单接收人", "来源于人员基础的账单接收人。"),
+    ("收费类型*", "周期类、仪表类、押金类、临时类或其他。"),
+    ("收费项*", "云收费中配置并绑定到房间的收费项。"),
+    ("收费标准*", "本场景要验证的具体收费标准。"),
+    ("收费标准编码", "如有稳定编码，建议维护以避免同名。"),
+    ("生效开始*", "收费标准对目标账期必须已经生效，格式 YYYY-MM-DD。"),
+    ("生效结束", "长期有效可留空，格式 YYYY-MM-DD。"),
+    ("计费公式*", "使用业务可读公式，例如 面积×单价。"),
+    ("计算参数*", "每行一个 KEY=VALUE，例如 AREA=80 和 UNIT_PRICE=2.5。"),
+    ("测试账期*", "用于该场景回归的可出账账期，格式 YYYY-MM。"),
+    ("减免配置", "填写无减免、固定金额减免、比例减免等规则及参数。"),
+    ("预期原始金额*", "人工确认或独立计算得出的金额，不要复制系统实际结果。"),
+    ("预期减免金额", "无减免时填写 0。"),
+    ("预期应收金额*", "用于账单金额断言。"),
+    ("舍入规则", "例如 四舍五入保留2位。"),
+    ("前置条件", "记录客户、接收人、收费项、标准和依赖数据的状态。"),
+    ("是否共享房间*", "存在并发或账单冲突时必须为“否”。"),
+    ("维护状态*", "模板、待补充、已核验或已停用。"),
+    ("是否启用*", "只有“是”才允许自动化读取执行。"),
+    ("数据负责人", "负责维护该场景基准数据的人员或团队。"),
+    ("最近检查日期", "最近人工或自动健康检查日期，格式 YYYY-MM-DD。"),
+    ("备注", "补充特殊规则、依赖数据和清理要求。"),
+]
+
+
+SCENARIO_ROWS = [
+    [
+        "YSF-SCENE-PERIODIC-001", "当前Demo-周期类出账", "standard1", "93537",
+        "云收费自动化MS1", "云收费自动化MS/1/周期性收费房间001", "", "", "",
+        "周期类", "周期性收费项", "待补充实际收费标准", "", "", "",
+        "按收费标准配置", "请填写实际计算参数", "2026-07", "无减免", "", "0", "",
+        "系统配置", "房间已绑定客户、接收人、收费项、收费标准且目标账期有效",
+        "否", "待补充", "否", "", "",
+        "补充收费标准、生效时间、计算参数和预期金额，人工核验后再启用",
+    ],
+    [
+        "TEMPLATE-PERIODIC-FIXED", "复制后修改-周期固定金额", "", "", "", "", "", "", "",
+        "周期类", "", "", "", "", "", "固定金额", "FIXED_AMOUNT=", "", "无减免", "", "0", "",
+        "四舍五入保留2位", "", "否", "模板", "否", "", "", "模板行，请复制并更换场景编号",
+    ],
+    [
+        "TEMPLATE-PERIODIC-AREA", "复制后修改-周期面积计费", "", "", "", "", "", "", "",
+        "周期类", "", "", "", "", "", "面积×单价", "AREA=\nUNIT_PRICE=", "", "无减免", "", "0", "",
+        "四舍五入保留2位", "房间面积已维护", "否", "模板", "否", "", "", "模板行，请复制并更换场景编号",
+    ],
+    [
+        "TEMPLATE-METER", "复制后修改-仪表计费", "", "", "", "", "", "", "",
+        "仪表类", "", "", "", "", "", "(本次读数-上次读数)×单价",
+        "PREVIOUS_READING=\nCURRENT_READING=\nUNIT_PRICE=", "", "无减免", "", "0", "",
+        "四舍五入保留2位", "仪表已绑定且读数数据已准备", "否", "模板", "否", "", "",
+        "模板行，请复制并更换场景编号",
+    ],
+    [
+        "TEMPLATE-DEPOSIT", "复制后修改-押金计费", "", "", "", "", "", "", "",
+        "押金类", "", "", "", "", "", "固定金额或数量×单价", "QUANTITY=\nUNIT_PRICE=", "", "无减免", "", "0", "",
+        "四舍五入保留2位", "", "否", "模板", "否", "", "", "模板行，请复制并更换场景编号",
+    ],
+    [
+        "TEMPLATE-TEMPORARY", "复制后修改-临时计费", "", "", "", "", "", "", "",
+        "临时类", "", "", "", "", "", "数量×单价", "QUANTITY=\nUNIT_PRICE=", "", "无减免", "", "0", "",
+        "四舍五入保留2位", "", "否", "模板", "否", "", "", "模板行，请复制并更换场景编号",
+    ],
+]
+
+
 def first_empty_row(ws, key_column=1, start=2):
     for row in range(start, ws.max_row + 1):
         if ws.cell(row, key_column).value in (None, ""):
@@ -180,6 +257,68 @@ def copy_row_style(ws, source_row, target_row, max_col):
             target.border = copy(source.border)
 
 
+def ensure_charge_scenario_sheet(workbook):
+    sheet_name = "收费场景配置"
+    created = sheet_name not in workbook.sheetnames
+    ws = workbook.create_sheet(sheet_name) if created else workbook[sheet_name]
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    for column, (header, help_text) in enumerate(SCENARIO_HEADERS, 1):
+        cell = ws.cell(1, column, header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(
+            horizontal="center", vertical="center", wrap_text=True
+        )
+        cell.comment = Comment(help_text, "Codex")
+
+    existing_ids = {
+        ws.cell(row, 1).value
+        for row in range(2, ws.max_row + 1)
+        if ws.cell(row, 1).value
+    }
+    for item in SCENARIO_ROWS:
+        if item[0] in existing_ids:
+            continue
+        row = first_empty_row(ws)
+        for column, value in enumerate(item, 1):
+            cell = ws.cell(row, column, value)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+        ws.row_dimensions[row].height = 72
+
+    widths = {
+        "A": 27, "B": 25, "C": 13, "D": 14, "E": 23, "F": 38,
+        "G": 17, "H": 20, "I": 20, "J": 13, "K": 22, "L": 25,
+        "M": 18, "N": 14, "O": 14, "P": 28, "Q": 34, "R": 13,
+        "S": 28, "T": 17, "U": 17, "V": 17, "W": 20, "X": 42,
+        "Y": 17, "Z": 15, "AA": 15, "AB": 18, "AC": 18, "AD": 42,
+    }
+    for column, width in widths.items():
+        ws.column_dimensions[column].width = width
+    ws.row_dimensions[1].height = 42
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:AD{max(ws.max_row, 2)}"
+
+    if created:
+        validations = [
+            ("C2:C1000", '"standard1,standard2,uat,prod"'),
+            ("J2:J1000", '"周期类,仪表类,押金类,临时类,其他"'),
+            ("Y2:Y1000", '"否,是"'),
+            ("Z2:Z1000", '"模板,待补充,已核验,已停用"'),
+            ("AA2:AA1000", '"否,是"'),
+        ]
+        for cell_range, options in validations:
+            validation = DataValidation(
+                type="list", formula1=options, allow_blank=True
+            )
+            validation.error = "请选择下拉列表中的有效值。"
+            validation.errorTitle = "无效值"
+            ws.add_data_validation(validation)
+            validation.add(cell_range)
+    return ws
+
+
 def main():
     source = resolve_source()
     workbook = load_workbook(source)
@@ -209,12 +348,15 @@ def main():
             accounts.cell(account_row, column, value)
         accounts.row_dimensions[account_row].height = 42
 
+    scenarios = ensure_charge_scenario_sheet(workbook)
+
     workbook.save(OUTPUT)
     print(f"source={source}")
     print(f"created={OUTPUT}")
     print(f"case_row={case_row}, case_id={cases.cell(case_row, 1).value}")
     print(f"test_data_rows={len(DATA_ROWS)}")
     print(f"account_rows={len(ACCOUNT_ROWS)}")
+    print(f"scenario_rows={scenarios.max_row - 1}")
 
 
 if __name__ == "__main__":
