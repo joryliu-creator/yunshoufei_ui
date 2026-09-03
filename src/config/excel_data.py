@@ -29,6 +29,7 @@ class ChargeScenarioData:
     charge_type: str
     charge_item: str
     charge_standard: str
+    formula: str
     calculation_parameters: str
     suggested_billing_month: str
     discount_config: str
@@ -108,7 +109,10 @@ def _load_scenario(
             f"场景 {scenario_id!r} 属于环境 {scenario_environment!r}、"
             f"客户 {scenario_customer!r}，与本次运行不一致。"
         )
-    if value("维护状态") != "已核验" or value("是否启用") != "是":
+    maintenance_status = value("维护状态")
+    # 场景维护状态允许追加审核结论（如“已核验-通过”）；只要基础
+    # 状态为已核验即可执行，避免状态备注使已确认场景无法加载。
+    if not maintenance_status.startswith("已核验") or value("是否启用") != "是":
         raise ValueError(
             f"场景 {scenario_id!r} 尚未同时满足“已核验且启用”。"
         )
@@ -132,6 +136,7 @@ def _load_scenario(
         charge_type=required_variables["CHARGE_TYPE"],
         charge_item=required_variables["CHARGE_ITEM"],
         charge_standard=value("收费标准"),
+        formula=value("计费公式"),
         calculation_parameters=value("计算参数"),
         suggested_billing_month=value("建议测试账期"),
         discount_config=value("减免配置"),

@@ -14,19 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.config.accounts import (  # noqa: E402
-    account_env_prefix,
-    customer_account_env_prefix,
     get_account_auth_profile,
     normalize_account_role,
     normalize_customer_id,
 )
+from src.config.credentials import load_local_credentials  # noqa: E402
 from src.config.environments import (  # noqa: E402
     load_test_environment,
     normalize_test_environment,
 )
-
-
-BASE_DATA_FILE = ROOT / "自动化测试基础数据.md"
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,48 +51,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="登录后保持浏览器打开 5 分钟。",
     )
+    parser.add_argument(
+        "--manual",
+        action="store_true",
+        help="不自动填写本地凭据，等待人工在浏览器中登录。",
+    )
     return parser.parse_args()
 
 
 def load_credentials(
     environment: str, customer_id: str, role: str
 ) -> tuple[str, str, str] | None:
-    scoped_prefix = customer_account_env_prefix(customer_id, role)
-    username = os.getenv(f"{scoped_prefix}_USERNAME", "").strip()
-    password = os.getenv(f"{scoped_prefix}_PASSWORD", "").strip()
-    captcha = os.getenv(f"{scoped_prefix}_CAPTCHA", "").strip()
-
-    is_legacy_standard1 = environment == "standard1" and customer_id == "93537"
-    if is_legacy_standard1:
-        legacy_prefix = account_env_prefix(role)
-        username = username or os.getenv(
-            f"{legacy_prefix}_USERNAME", ""
-        ).strip()
-        password = password or os.getenv(
-            f"{legacy_prefix}_PASSWORD", ""
-        ).strip()
-        captcha = captcha or os.getenv(
-            f"{legacy_prefix}_CAPTCHA", ""
-        ).strip()
-
-        if role == "default":
-            username = username or os.getenv("TEST_USERNAME", "").strip()
-            password = password or os.getenv("TEST_PASSWORD", "").strip()
-            captcha = captcha or os.getenv("CAPTCHA", "").strip()
-    captcha = captcha or "0000"
-
-    if username and password:
-        return username, password, captcha
-
-    if is_legacy_standard1 and role == "default" and BASE_DATA_FILE.exists():
-        content = BASE_DATA_FILE.read_text(encoding="utf-8")
-        match = re.search(
-            r"测试账号\s*[:：]\s*(\S+)\s+密码\s*[:：]\s*(\S+)", content
-        )
-        if match:
-            return match.group(1), match.group(2), captcha
-
-    return None
+    return load_local_credentials(ROOT, environment, customer_id, role)
 
 
 def main() -> None:
@@ -129,14 +95,22 @@ def main() -> None:
         page = context.new_page()
         page.goto(f"{settings.base_url}#/login", wait_until="domcontentloaded")
 
-        credentials = load_credentials(environment, customer_id, role)
+        credentials = None if args.manual else load_credentials(
+            environment, customer_id, role
+        )
         if credentials is not None:
             username, password, captcha = credentials
-            page.get_by_placeholder("用户名").fill(username)
-            page.get_by_placeholder("密码").fill(password)
-            page.get_by_placeholder("验证码", exact=True).fill(captcha)
-            login_button = page.locator("button:visible").filter(
-                has_text=re.compile(r"登\s*录")
+            # The portal sometimes renders the login form after navigation;
+            # its placeholder/ARIA text is not stable across deployments.
+            # The three visible Element UI inputs keep a stable order:
+            # username, password, captcha.
+            login_inputs = page.locator("input.el-input__inner:visible")
+            expect(login_inputs.nth(2)).to_be_visible(timeout=30_000)
+            login_inputs.nth(0).fill(username)
+            login_inputs.nth(1).fill(password)
+            login_inputs.nth(2).fill(captcha)
+            login_button = page.get_by_role(
+                "button", name=re.compile(r"登\s*录")
             )
             expect(login_button).to_have_count(1)
             login_button.click()

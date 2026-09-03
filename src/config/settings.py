@@ -104,7 +104,7 @@ class Settings:
         workbook_path = Path(
             os.getenv("TEST_DATA_WORKBOOK", str(DEFAULT_WORKBOOK))
         )
-        case_id = os.getenv("TEST_CASE_ID", "YSF-BILL-001").strip()
+        case_id = os.getenv("TEST_CASE_ID", "YSF-BILL-PERIODIC-001").strip()
         case_reference = load_case_reference(case_id, workbook_path)
         scenario_id = (
             os.getenv("SCENARIO_ID", "").strip()

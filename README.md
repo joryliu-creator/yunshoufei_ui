@@ -68,6 +68,52 @@ ALLOW_BILL_CREATION=true
 pytest tests/billing/test_create_periodic_bill.py -v --test-env standard1 --customer-id 93537
 ```
 
+## Jenkins 定时执行
+
+完整的本地/Jenkins 操作步骤见 [云收费 UI 自动化运行操作文档](docs/云收费UI自动化运行操作文档.md)。
+
+Jenkins 节点只需要准备 Python 虚拟环境、Playwright Chromium、对应环境的
+`.env.<环境>` 和 `.auth/<环境>/<客户号>/<账号别名>/` 登录状态，不要把真实凭据提交到仓库。
+推荐将下面的脚本作为 Windows PowerShell/批处理构建步骤执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_jenkins_regression.py `
+  --test-env standard1 `
+  --customer-id 93537 `
+  --account-role default
+```
+
+`run_jenkins_regression.py` 默认以无头 Chromium 串行执行 `tests/billing`，每条用例仍按
+账单编号作废并删除；中断运行时会追加清理计费出账待处理卡片和临时类账单，最后无论测试
+是否失败都会生成 `artifacts/jenkins-junit.xml` 和
+`artifacts/jenkins-regression-report.html`。在 Jenkins 中将 JUnit 路径发布为
+`artifacts/jenkins-junit.xml`，并将 HTML 报告目录发布为 `artifacts`。
+
+为避免整批任务超过一小时，脚本默认设置 50 分钟总时长保护。用例较多时可建立 4 个
+Jenkins 定时任务，分别传入 `--shard-count 4 --shard-index 0`（索引依次为 0、1、2、3）；
+每个分片仍是串行执行，且各自生成独立的 JUnit/HTML 文件。若需要汇总，可在 Jenkins 中
+统一发布 `artifacts` 目录。
+
+首次验证 Jenkins 配置时建议只跑一个用例，确认登录、金额断言和清理链路后再扩大范围：
+
+```powershell
+.\\.venv\\Scripts\\python.exe scripts\\run_jenkins_regression.py `
+  --test-env standard1 --customer-id 93537 `
+  --test-target "tests/billing/test_create_periodic_center_bills.py::test_create_periodic_bill_and_cleanup[chromium-YSF-BILL-PERIODIC-1002]"
+```
+
+Jenkins 若允许长时间运行，可显式传入 `--max-minutes 0`；本地调试仍建议保留默认的
+50 分钟保护。
+
+脚本会拒绝 `prod`，并要求 `.env.<环境>` 中显式开启
+`ALLOW_BILL_CREATION=true`、`CLEANUP_CREATED_BILL=true` 和
+`ALLOW_BILL_DELETION=true`，避免定时任务产生无法清理的数据。仅检查用例数量时可执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_jenkins_regression.py `
+  --test-env standard1 --customer-id 93537 --collect-only --skip-post-cleanup
+```
+
 默认执行 Excel 中的 `YSF-BILL-001`。运行其他用例或临时切换场景：
 
 ```powershell

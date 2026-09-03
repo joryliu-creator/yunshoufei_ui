@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,51 @@ from src.config.excel_data import DEFAULT_WORKBOOK, load_case_reference
 
 
 ROOT = Path(__file__).resolve().parent
+_GROUP_CLEANUP_ERRORS: list[str] = []
+_BETWEEN_GROUP_CLEANUP_SCRIPTS = (
+    "scripts/cleanup_calculation_pending.py",
+    "scripts/cleanup_calculation_temporary_bills.py",
+    "scripts/cleanup_bill_center_room_gate.py",
+)
+_FINAL_CLEANUP_SCRIPTS = (
+    *_BETWEEN_GROUP_CLEANUP_SCRIPTS,
+    "scripts/cleanup_temporary_ledger_bills.py",
+)
+
+
+def _truthy_environment(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _entrypoint_group(item: pytest.Item) -> int:
+    name = Path(str(item.fspath)).name
+    if name in {
+        "test_create_periodic_center_bills.py",
+        "test_create_meter_bills.py",
+    }:
+        return 0  # Bill Center
+    if name in {
+        "test_calculate_periodic_bill.py",
+        "test_calculate_temporary_bill.py",
+    }:
+        return 1  # Billing Issuance
+    if name == "test_create_deposit_bill.py":
+        if "in_calculation_then_bill_center_cleanup" in item.name:
+            return 1
+        return 2  # Temporary Ledger
+    if name == "test_create_temporary_bill.py":
+        return 2  # Temporary Ledger
+    return 99
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """Keep the legacy single-room Demo out of maintained batch runs."""
+    if (
+        collection_path.name == "test_create_periodic_bill.py"
+        and not _truthy_environment("RUN_LEGACY_DEMO")
+    ):
+        return True
+    return None
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -49,7 +96,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--case-id",
         action="store",
         default=None,
-        help="Excel 用例编号，例如 YSF-BILL-001。",
+        help="Excel 用例编号，例如 YSF-BILL-PERIODIC-001。",
     )
     parser.addoption(
         "--scenario-id",
@@ -74,7 +121,7 @@ def pytest_configure(config: pytest.Config) -> None:
         except ValueError as exc:
             raise pytest.UsageError(str(exc)) from exc
     case_id = config.getoption("--case-id") or os.getenv(
-        "TEST_CASE_ID", "YSF-BILL-001"
+        "TEST_CASE_ID", "YSF-BILL-PERIODIC-001"
     )
     os.environ["TEST_CASE_ID"] = case_id
     workbook_path = Path(
@@ -96,6 +143,10 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
+    original_order = {id(item): index for index, item in enumerate(items)}
+    items.sort(
+        key=lambda item: (_entrypoint_group(item), original_order[id(item)])
+    )
     environment = normalize_test_environment(
         config.getoption("--test-env") or os.getenv("TEST_ENV")
     )
@@ -107,6 +158,39 @@ def pytest_collection_modifyitems(
     for item in items:
         if item.get_closest_marker("side_effect"):
             item.add_marker(production_skip)
+
+
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Clean between entrypoint groups while keeping one pytest login session."""
+    if nextitem is None:
+        return
+    current = _entrypoint_group(item)
+    following = _entrypoint_group(nextitem)
+    if current == 99 or following == 99 or current == following:
+        return
+    for script in _BETWEEN_GROUP_CLEANUP_SCRIPTS:
+        result = subprocess.run([sys.executable, script], cwd=ROOT, env=os.environ.copy())
+        if result.returncode:
+            _GROUP_CLEANUP_ERRORS.append(f"{script} ({result.returncode})")
+            print(f"[group-cleanup] failed: {script} ({result.returncode})")
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if (
+        not session.config.getoption("collectonly")
+        and any(_entrypoint_group(item) != 99 for item in session.items)
+        and _truthy_environment("CLEANUP_CREATED_BILL")
+        and _truthy_environment("ALLOW_BILL_DELETION")
+    ):
+        for script in _FINAL_CLEANUP_SCRIPTS:
+            result = subprocess.run(
+                [sys.executable, script], cwd=ROOT, env=os.environ.copy()
+            )
+            if result.returncode:
+                _GROUP_CLEANUP_ERRORS.append(f"{script} ({result.returncode})")
+                print(f"[final-cleanup] failed: {script} ({result.returncode})")
+    if _GROUP_CLEANUP_ERRORS and exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.fixture(scope="session")
@@ -271,3 +355,38 @@ def page(context: BrowserContext) -> Generator[Page, None, None]:
     created_page = context.new_page()
     yield created_page
     created_page.close()
+
+
+@pytest.fixture(scope="session")
+def fresh_login_page(
+    browser: Browser,
+    browser_context_args: dict[str, Any],
+    request: pytest.FixtureRequest,
+) -> Generator[Page, None, None]:
+    """Batch-shared authenticated page for serial billing scenarios.
+
+    Start from the saved account profile, then reuse the same context for the
+    whole batch.  ``PortalPage.open_home`` still performs the normal local
+    credential recovery if that profile has expired.  This avoids creating a
+    second server-side login session merely because a test uses this fixture.
+    """
+    environment = normalize_test_environment(
+        request.config.getoption("--test-env") or os.getenv("TEST_ENV")
+    )
+    customer_id = normalize_customer_id(
+        request.config.getoption("--customer-id")
+        or os.getenv("CUSTOMER_ID")
+        or os.getenv("MASTER_CUSTOMER_ID")
+    )
+    role = normalize_account_role(
+        request.config.getoption("--account-role")
+        or os.getenv("TEST_ACCOUNT_ROLE")
+        or "default"
+    )
+    context = _new_account_context(
+        browser, browser_context_args, role, environment, customer_id
+    )
+    context.set_default_timeout(30_000)
+    created_page = context.new_page()
+    yield created_page
+    context.close()

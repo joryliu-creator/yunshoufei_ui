@@ -54,9 +54,10 @@ def test_business_values_come_from_excel_not_stale_environment_variables(
 
     created = settings_module.Settings.from_env()
 
-    assert created.project_name == "云收费自动化MS1"
-    assert created.room_path.endswith("周期性收费房间001")
-    assert created.billing_month == "2026-07"
+    assert created.project_name == "云收费UI自动化"
+    assert created.room_path == "A栋/1层/1001"
+    # The active regression data uses the August 2026 billing period.
+    assert created.billing_month == "2026-08"
 
 
 def test_other_environment_requires_explicit_configuration(
