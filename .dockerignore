@@ -1,0 +1,15 @@
+.env
+.env.*
+.auth
+.git
+.gitignore
+.idea
+artifacts
+playwright-report
+__pycache__
+*.pyc
+*.log
+deploy
+收费标准计费公式
+前置数据模版文件/*
+!前置数据模版文件/线下仪表用量导入模板.xlsx

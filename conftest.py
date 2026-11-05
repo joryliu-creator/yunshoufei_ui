@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from src.config.excel_data import DEFAULT_WORKBOOK, load_case_reference
 
 ROOT = Path(__file__).resolve().parent
 _GROUP_CLEANUP_ERRORS: list[str] = []
+_PROGRESS_STATE = {"total": 0, "completed": 0, "passed": 0, "failed": 0, "skipped": 0}
 _BETWEEN_GROUP_CLEANUP_SCRIPTS = (
     "scripts/cleanup_calculation_pending.py",
     "scripts/cleanup_calculation_temporary_bills.py",
@@ -49,6 +51,11 @@ def _entrypoint_group(item: pytest.Item) -> int:
         "test_create_meter_bills.py",
     }:
         return 0  # Bill Center
+    if name == "test_public_share_meter_billing.py":
+        if item.name.startswith("test_bill_center_public_share_meter_regression"):
+            return 0  # Bill Center public-share extension
+        if item.name.startswith("test_calculation_public_share_meter_regression"):
+            return 1  # Billing Issuance public-share extension
     if name in {
         "test_calculate_periodic_bill.py",
         "test_calculate_temporary_bill.py",
@@ -143,6 +150,12 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
+    _PROGRESS_STATE["total"] = len(items)
+    state_path = os.getenv("TEST_PROGRESS_STATE", "").strip()
+    if state_path:
+        target = Path(state_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(_PROGRESS_STATE), encoding="utf-8")
     original_order = {id(item): index for index, item in enumerate(items)}
     items.sort(
         key=lambda item: (_entrypoint_group(item), original_order[id(item)])
@@ -162,6 +175,11 @@ def pytest_collection_modifyitems(
 
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
     """Clean between entrypoint groups while keeping one pytest login session."""
+    # A targeted smoke run uses per-test business-key cleanup and read-only
+    # preflight. The normal batch sweeps have a broader room/month scope and
+    # must not touch unrelated historical records during a 12-case sample.
+    if _truthy_environment("SCOPED_BILLING_CLEANUP_ONLY"):
+        return
     if nextitem is None:
         return
     current = _entrypoint_group(item)
@@ -175,14 +193,69 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
             print(f"[group-cleanup] failed: {script} ({result.returncode})")
 
 
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Record compact per-case progress outside pytest's captured output."""
+    progress_path = os.getenv("TEST_PROGRESS_LOG", "").strip()
+    state_path = os.getenv("TEST_PROGRESS_STATE", "").strip()
+    if (not progress_path and not state_path) or report.when != "call":
+        return
+    if progress_path:
+        path = Path(progress_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = (
+            f"{datetime.now().isoformat(timespec='seconds')} "
+            f"{report.outcome.upper()} {report.nodeid}\n"
+        )
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.flush()
+    if state_path:
+        _PROGRESS_STATE["completed"] += 1
+        bucket = report.outcome if report.outcome in {"passed", "failed", "skipped"} else "failed"
+        _PROGRESS_STATE[bucket] += 1
+        payload = dict(_PROGRESS_STATE)
+        payload["last_node"] = report.nodeid
+        payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        target = Path(state_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_suffix(target.suffix + ".tmp")
+        temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp.replace(target)
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    _PROGRESS_STATE["total"] = len(session.items)
+    state_path = os.getenv("TEST_PROGRESS_STATE", "").strip()
+    if state_path:
+        target = Path(state_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(_PROGRESS_STATE), encoding="utf-8")
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if (
-        not session.config.getoption("collectonly")
+        not _truthy_environment("SCOPED_BILLING_CLEANUP_ONLY")
+        and not session.config.getoption("collectonly")
         and any(_entrypoint_group(item) != 99 for item in session.items)
         and _truthy_environment("CLEANUP_CREATED_BILL")
         and _truthy_environment("ALLOW_BILL_DELETION")
     ):
         for script in _FINAL_CLEANUP_SCRIPTS:
+            # A targeted Bill Center/Billing Issuance batch may not touch the
+            # Temporary Ledger at all.  Its standalone sweep opens a separate
+            # UI session and can fail on an unavailable ledger iframe, turning
+            # an otherwise successful batch into a false failure.  Keep the
+            # default full-regression sweep unchanged; targeted runners can
+            # explicitly opt out when the ledger entrypoint is out of scope.
+            if (
+                script == "scripts/cleanup_temporary_ledger_bills.py"
+                and _truthy_environment("SKIP_UNRELATED_TEMPORARY_LEDGER_CLEANUP")
+            ):
+                print(
+                    "[final-cleanup] skipped temporary ledger sweep: "
+                    "entrypoint is out of scope for this batch"
+                )
+                continue
             result = subprocess.run(
                 [sys.executable, script], cwd=ROOT, env=os.environ.copy()
             )
@@ -267,22 +340,42 @@ def _restore_session_storage(
         )
 
     storage_json = json.dumps(session_storage, ensure_ascii=False)
-    allowed_hostname = urlparse(os.getenv("BASE_URL", "")).hostname
-    if not allowed_hostname:
+    parsed_url = urlparse(os.getenv("BASE_URL", ""))
+    expected_origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    if not parsed_url.scheme or not parsed_url.netloc:
         pytest.fail("当前环境 BASE_URL 无效，无法安全恢复 sessionStorage。")
-    hostname_json = json.dumps(allowed_hostname)
+    try:
+        auth_state = json.loads(profile.auth_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        pytest.fail(
+            f"账号别名 {profile.role!r} 的登录状态文件无效：{exc}",
+            pytrace=False,
+        )
+    saved_origins = {
+        item.get("origin")
+        for item in auth_state.get("origins", [])
+        if isinstance(item, dict) and item.get("origin")
+    }
+    # A storage snapshot is tied to its exact scheme/host/port. In particular,
+    # don't replay an HTTP session into HTTPS after the environment migrates.
+    if saved_origins and expected_origin not in saved_origins:
+        return
+    origin_json = json.dumps(expected_origin)
     restore_script = """
         (() => {
           const storage = __SESSION_STORAGE__;
-          const allowedHostname = __ALLOWED_HOSTNAME__;
-          if (window.location.hostname === allowedHostname) {
+          const expectedOrigin = __EXPECTED_ORIGIN__;
+          const marker = '__codex_saved_session_storage_restored_v1__';
+          if (window.location.origin === expectedOrigin &&
+              window.sessionStorage.getItem(marker) !== '1') {
             for (const [key, value] of Object.entries(storage)) {
               window.sessionStorage.setItem(key, value);
             }
+            window.sessionStorage.setItem(marker, '1');
           }
         })();
         """.replace("__SESSION_STORAGE__", storage_json).replace(
-            "__ALLOWED_HOSTNAME__", hostname_json
+            "__EXPECTED_ORIGIN__", origin_json
         )
     context.add_init_script(script=restore_script)
 
@@ -351,10 +444,45 @@ def account_context(
 
 
 @pytest.fixture
-def page(context: BrowserContext) -> Generator[Page, None, None]:
+def page(request: pytest.FixtureRequest) -> Generator[Page, None, None]:
+    if _truthy_environment("QUICK_RELEASE_SHARED_LOGIN"):
+        # The quick pre-release matrix is strictly serial and deliberately
+        # reuses one authenticated tab across entrypoints.  Resolve the
+        # session-scoped page lazily so a redundant function-scoped context
+        # (and another server login) is not created.
+        yield request.getfixturevalue("fresh_login_page")
+        return
+    context = request.getfixturevalue("context")
     created_page = context.new_page()
     yield created_page
     created_page.close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_quick_release_shared_ui(request: pytest.FixtureRequest) -> Generator[None, None, None]:
+    if not _truthy_environment("QUICK_RELEASE_SHARED_LOGIN"):
+        yield
+        return
+
+    # Keep one server login for the quick batch, but reload the outer portal
+    # between cases so a stale iframe drawer/tree cannot leak into the next
+    # module's UI state. This deliberately does not re-login.
+    page = request.getfixturevalue("fresh_login_page")
+    yield
+    if page.is_closed():
+        return
+    # The module may still be on the same outer Home URL with a persistent
+    # iframe/tab. Navigating to the identical URL is not enough to reset it;
+    # reload the portal document to discard stale drawers and tree popovers.
+    page.reload(wait_until="commit", timeout=30_000)
+    page.get_by_text("云收费", exact=True).wait_for(
+        state="visible", timeout=30_000
+    )
+    from src.pages.portal_page import PortalPage
+
+    portal = PortalPage(page)
+    portal.dismiss_home_overlays()
+    portal.collapse_customer_service()
 
 
 @pytest.fixture(scope="session")

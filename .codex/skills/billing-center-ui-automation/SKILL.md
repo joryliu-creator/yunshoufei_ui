@@ -19,6 +19,10 @@ temporary billing:
   is logged in elsewhere, do not immediately mark login as failed. Submit the
   login once more, request `#/Home?masterCustomerId=<customer>` explicitly,
   dismiss overlays, and verify the portal/business menu.
+- When the portal displays `账号在其他地方登录` during any automated login,
+  treat it as a recoverable session conflict: clear the current stale session,
+  perform one fresh login with the configured credentials, reopen the explicit
+  customer Home route, and verify the portal menu plus target business iframe.
 - If the second recovery still cannot reach the portal, stop and report the
   login blocker. Do not loop indefinitely or create business data while login
   state is uncertain.
@@ -38,8 +42,8 @@ temporary billing:
 
 - 日常新增用例、Page Object 修改、Excel 参数化、稳定脚本维护和普通失败分析，默认使用 GPT-5.6 Luna，以节省 token；已验证的简单变更、Excel 机械维护和文档整理也使用 Luna。
 - 需要跨 iframe/弹窗状态分析、金额口径冲突、框架设计或较复杂的失败定位时，切换到 GPT-5.6 Terra；不要把 Terra 或 Sol 作为所有任务的默认模型。
-- 同一根因连续 3 次无进展，或诊断累计超过 20 分钟后，才允许启动一次 GPT-5.6 Sol/high 独立诊断；最多 2 次，仍无解就停止升级并请求用户协助。模型切换只影响分析和编写，不会加速 Playwright 页面本身的网络、接口或后台计算等待。
-- 用户已授权：同一根因假设连续 3 次诊断无有效进展，或累计诊断超过 20 分钟后，可最多启动 2 次独立的 GPT-5.6 Sol / high 诊断任务。每次只分析当前阻塞问题；两次仍无解时停止升级并请求用户协助，不得再次自动升级或切换主任务模型。
+- 同一根因连续 3 次无进展、单一问题持续超过 20 分钟，或出现会话/iframe/弹窗/清理等多状态耦合时，启动一次独立 GPT-6 Sol 轻量级子 agent 诊断；该任务聚焦根因和最小修复，不重复跑批次。
+- 主任务模型不自动切换；该升级指独立子 agent 使用 GPT-6 Sol、low reasoning effort。模型不会加速 Playwright 页面本身的网络或后台等待。
 - 已稳定的回归由本地 Playwright/pytest 命令直接运行。脚本执行本身不调用模型；只在失败日志、截图或 trace 需要分析时请求 AI，避免让 AI 逐条观察和等待常规回归。
 - 将业务规则、变量和预期金额维护在 Excel、代码和共享 Skill 中；新场景使用简短任务描述并引用这些资产，避免在长对话中重复粘贴历史步骤、账号或截图。
 - 页面探索先由测试人员确认一次正确业务路径；AI 后续负责固化、批量化和回归。需要截图时只提供关键异常截图，不为正常步骤逐页截图。
@@ -89,6 +93,8 @@ Excel 必须作为执行代码的真实数据源：操作步骤中的 `${VARIABL
 
 涉及金额计算时，在“收费场景配置”工作表按“一行一个专用房间 + 收费项 + 收费标准组合”维护生效时间、计费公式、计算参数、减免配置和预期金额。模板、待补充和停用记录不得执行，只有已核验且启用的场景可被测试引用。
 
+绑定房间收费设置的周期类收费标准，预期金额按标准自身的不足月方式计算：按满月时，不足月仍收整月月单价；按天时，使用 `月单价 ÷ 当月自然日数 × 本期计费天数`。例如 3 月 7 日至 3 月 31 日若按首尾包含计为 25 天，按天金额为 `月单价 ÷ 31 × 25`。用例配置必须保存标准类型、计费期间、计费天数和独立计算的预期金额；计费天数以已验证的产品/页面口径为准。此规则仅适用于周期类收费标准，不应用于仪表公摊方案自身的不足月分配，后者按独立公摊业务规则计算。
+
 批量准备收费公式基准房间时，使用 `scripts/update_room_import_template.py` 同时生成 `房间导入模版.xlsx` 和 `房间收费标准映射表.xlsx`。导入模板只改“房间号”，按 `1001` 起连续短编号，其余字段复制模板首条数据；业务含义放在映射表中。计费公式保留系统原始名称；公式出现“计费面积”时，收费标准名称分别将其替换为建筑面积、使用面积、收费面积。每个周期类“公式 + 计费面积”必须分别建立按天、按满月两个标准并使用不同房间，名称追加 `-按天` 或 `-按满月`。跨收费类型存在同名公式时增加类型前缀。
 
 ### 5. 分级验证
@@ -132,6 +138,8 @@ Excel 必须作为执行代码的真实数据源：操作步骤中的 `${VARIABL
 
 当前项目正式回归矩阵必须保持为 102 个入口级场景：周期类 22 个房间分别覆盖账单中心和计费出账，共 44 条；仪表类 12 个房间分别覆盖账单中心和计费出账，共 24 条；临时类 11 个房间分别覆盖计费出账和临时台账，共 22 条；押金类 6 个房间分别覆盖计费出账和临时台账，共 12 条。账单中心合计 34 条、计费出账合计 51 条、临时台账合计 17 条。不同入口不得合并成一条用例，旧 Demo 用例不得混入正式批量采集；修改参数化绑定后必须通过 `pytest --collect-only` 校验总数和各入口数量。
 
+公摊账单专项作为核心 102 条之外的可执行扩展矩阵维护，不得误删或折算进上述核心数量：周期类公摊 10 个关联房间分别覆盖账单中心和计费出账，共 20 条；正式水表/电表公摊 32 个关联房间分别覆盖两个入口，共 64 条。两入口分别使用独立 `YSF-BILL-*` / `YSF-CALC-*` 用例编号和 `SCENARIO_ID`，由默认 `tests/billing` 批次发现并串行执行；公共仪表及公摊基线不在账单清理范围内，账单仍须按入口规则逐条清理。
+
 清理实现不得在拿到本次账单编号后再用“精确账期”重新筛选来决定是否清理；不同页面版本可能只接受全年范围，二次筛选返回 0 会造成漏清理。编号一旦捕获，应直接按编号执行作废、删除和不存在复查；只有编号尚未捕获时，才使用已确认的账期+房间+收费项/金额组合定位，并将定位失败记录为清理失败。
 ## 页面变更后的回归用例同步
 
@@ -140,7 +148,15 @@ Excel 必须作为执行代码的真实数据源：操作步骤中的 `${VARIABL
 该同步要求为跨资产规范：同一次页面或交互变更验证通过后，还必须同步更新 `cloud-billing-product-knowledge` 业务 Skill 和本 UI 自动化 Skill，确保业务规则、自动化实现与回归用例三者一致。
 ## 本地批量执行输出策略
 
-本地批量回归时默认静默执行，将 pytest 标准输出、失败详情和截图/trace 写入 artifacts 日志；执行期间不持续向对话回显单条用例进度。任务结束后只读取汇总并更新测试结果、HTML/JUnit 报告和必要的失败摘要。若执行中出现阻塞或需要用户介入，再发送一次简短状态说明。
+本地批量回归时默认静默执行，将 pytest 标准输出、失败详情和截图/trace 写入 artifacts 日志；同时维护一个很小的进度状态文件（完成数、通过/失败数、最后用例、最后更新时间）。执行期间每 60--120 秒只读取该摘要，不读取完整日志、不逐条回显；任务结束后才读取汇总和失败详情并更新报告。若最后更新时间超过阈值且完成数不变，才按模型路由规则启动诊断。
+
+## 收费标准专项清理
+
+- 收费标准创建、查询和删除均在“云收费 → 收费设置 → 收费标准管理”完成。
+- 抽成类收费标准暂不纳入当前批量专项回归；待单独录制适用项目与收费项异步刷新流程后再启用，现有参数化脚本会显式跳过该类。
+- 新环境业务初始化使用 `scripts/create_charge_standards.py` 的默认业务名称模式，直接创建房间映射表所需的非 `AT-` 收费标准；自动化专项必须显式使用 `--automation-names`，不得用 `AT-` 测试标准替代业务初始化数据。
+- Element UI 可能同时保留项目、收费项和计费公式的下拉弹层；选择时必须绑定包含目标选项的当前弹层，禁止使用全局第一个可见下拉层。
+- 自动化仅清理本次运行创建且以 `AT-` 开头的收费标准。删除前若状态为“启用”，必须先切换为“未启用”（兼容页面文案“停用”），确认状态变化后再删除，并按完整名称复查不存在。
 ## Calculation-bill cleanup lookup
 
 For bills generated through Billing Issuance, locate cleanup targets in Bill
@@ -206,3 +222,149 @@ any group cleanup failure must fail the run and be reported.
   idempotent success.
 - Session-end recovery must run after the final Temporary Ledger group as well
   as between entrypoint groups. It must not run for unit-only pytest sessions.
+
+## Verified bill-discount workflow
+
+- Reuse the established `BillingCenterPage` create-bill flow. When several
+  business iframes remain mounted, retain the Playwright `Frame` that contains
+  the Bill Center controls; do not rebuild a `FrameLocator` from its name.
+- If the portal already has a Bill Center or 减免管理-新 top tab, click that
+  tab to switch the mounted iframe. Use the left menu only when the tab does
+  not exist, and still assert the target iframe's business controls afterward.
+- In 选择减免账单, filter only by room, then select the matching bill. Do
+  not add billing-month or charge-item criteria to that screen. Discount
+  Management Advanced Search also selects the room directly and must not use
+  Temporary Ledger's bill-object hover menu.
+- The create drawer's room field uses the `jie-content` input whose placeholder
+  is 请选择. Advanced Search uses `jie-dialog-label` / `jie-poper-input`,
+  while its visible tree popover is mounted at the discount iframe root.
+- Debug-only continuation may explicitly enable
+  `REUSE_EXISTING_DISCOUNT_BILL=true` and
+  `DEFER_DISCOUNT_BILL_CLEANUP_ON_FAILURE=true`. Formal regression leaves both
+  unset and preserves `finally` cleanup. Even debug runs must void/delete and
+  recheck the bill after the whole flow passes.
+- Real verification on 2026-09-09 passed for room 1101 and billing month
+  2026-08: original 10.00, discount 5.00, receivable 5.00; application, audit,
+  amount assertions, void, delete, and absence recheck all passed.
+- Discount regression currently includes 1101 (按折扣), 1102 (按固定金额),
+  and 1103 (自定义金额). 1102 reuses the verified 1101 interaction sequence.
+  For 1103, after choosing the scheme, fill 5 in the editable input to the
+  right of 减免金额, trigger blur/change (for example with Tab), and verify
+  the value remains 5 before continuing. 1104-1106 are excluded until penalty
+  data exists. Room 1103 passed create, application, audit, amount assertion,
+  void, delete, and absence recheck on 2026-09-09.
+
+## Model routing for debugging
+
+Use model capacity according to the work, so repeated low-quality diagnosis does
+not cost more than one focused escalation:
+
+- Use GPT-5.6 Luna for running an already-stable regression, mechanical edits,
+  Excel or documentation maintenance, log summarization, and simple locator
+  corrections whose root cause is already known.
+ - Use GPT-5.6 Terra as the default diagnostic tier for ordinary Playwright
+  failures, including iframe readiness, Element UI overlays, asynchronous
+  dropdowns, locator ambiguity, and page-state recovery.
+- When the same root-cause hypothesis has made no material progress after
+  three attempts, diagnosis has exceeded 20 minutes, or the failure crosses
+  several coupled states such as login, mounted iframes, business submission,
+  and cleanup, launch one bounded independent GPT-6 Sol/light diagnosis and
+  repair (reasoning low, normal execution speed). Do not continue Luna retries
+  after this threshold. This is the user's explicit escalation rule for this
+  project.
+- Use GPT-6 Sol only for that bounded escalation, or when the user explicitly
+  authorizes it; do not repeatedly launch Sol for unchanged evidence.
+- A model escalation is for diagnosis and the smallest justified fix. Stable
+  script execution remains local and does not require a reasoning model to
+  watch each test or stream logs.
+ - Codex cannot silently replace the model of the currently running main task.
+   The user changes that model in the Codex UI. When collaboration tools and the
+   current task policy permit model overrides, Codex may launch one independent
+   GPT-6 Sol/light diagnostic task after the threshold, then apply and verify
+   its evidence in the main task. If unavailable, report the limitation; do not
+   claim the main-task model changed.
+- Record the root cause, evidence, changed code, and verification result after
+  an escalation. A second GPT-6 Sol diagnosis is allowed only for new evidence
+  or a genuinely different hypothesis. If it remains inconclusive, report the
+  evidence and request focused user assistance rather than repeatedly
+  escalating on unchanged evidence.
+
+## 周期类公摊方案专项
+
+- 周期类公摊方案按“一条参数化用例对应一种公摊方式/计费面积组合”维护，入口为
+  `云收费 -> 收费设置 -> 公摊方案`；创建前必须选择项目、收费项类型“周期性费用”、
+  公摊周期性收费项和对应收费标准。
+- 三种周期公摊方式分别覆盖按房间设置比例分摊、按房间设置金额分摊、按住户面积及所在楼层
+  对应系数公摊。比例/金额场景必须使用两个房间并校验结构化参数；面积场景分别覆盖建筑面积、
+  使用面积、收费面积，阶梯上下限必须满足当前后端“连续且非空”的校验。
+- 依赖下拉必须在上一级选项真正落值且目标选项唯一可见后再选择；收费项下拉为空时只允许
+  有界地重建一次抽屉组件并重试，不得无限点击或把空列表当成通过。
+- 正式参数化回归在同一个已认证 BrowserContext 内复用登录，但每个公摊场景使用新 Page，避免
+  上一个 iframe/抽屉的 Vue 状态污染；场景结束在 `finally` 关闭抽屉。副作用开关
+  `ALLOW_PUBLIC_SHARE_SCHEME_CREATION` 默认关闭，只有明确实跑时显式开启。
+- 公摊参与房间默认不绑定收费项；但“收费面积”由后端已有房间收费配置提供。若公摊专用房间
+  返回收费面积 0，禁止通过脚本伪造禁用输入框，必须改用已配置收费面积的基准房间或先补齐
+  明确的前置数据，并在 Excel 专项记录中说明原因。
+- 创建成功后按方案名称精确查询并校验收费项类型、关联收费项、公摊方式和计费面积；本专项
+  仅验证创建，不自动删除业务方案，除非另有明确的清理授权。
+- 周期类公摊方案的自动化名称必须以 `AT-` 开头，并在名称末尾追加该方案关联的完整房间对，
+  例如 `...-1201-1202`；用例参数、Excel 和清理名单必须使用同一完整名称。
+- 依赖计费面积的公摊房间对必须有可区分的基础面积：同一房间的建筑面积与使用面积不能相等，
+  且同一方案的两个参与房间不能使用完全相同的面积组合。`scripts/add_public_share_rooms.py`
+  维护周期类和仪表类计费面积公摊的专用房间对及备注。
+
+## 仪表类公摊方案专项
+
+- 水表、电表、燃气表、空调使用同一个“新增公摊方案”页面流程和 Page Object；按数据参数切换
+  仪表类型、公共仪表、关联收费项/收费标准及房间对，不得为每种仪表复制一套交互步骤。
+- 每种仪表按户、按计费面积、按住户所在楼层系数、按住户计费面积系数四种方式分别覆盖
+  按满月计费和按天计费；每个方案绑定两个房间，场景数据由 `公摊方案专项` Excel 工作表驱动。
+- 仪表公摊方案的按天/按满月必须按公摊业务规则独立计算，不能复用或改写关联收费标准自身的按天/按满月规则。用量周期取相邻抄表时间（例如 2026-08 为
+  `2026-07-04 00:00:00` 至 `2026-08-04 00:00:00`）；入住日按首尾包含计数，例如 2026-07-15 至 2026-08-04 为 21 天。
+  两房均不足周期时按各自实际入住天数分摊、剩余由物业承担；两房均覆盖完整周期时按满周期公式分摊；仅一房不足周期时先算该房份额，仪表剩余用量全部分配给另一满周期房间。完整周期天数的分母口径未确认前，不得硬编码比例或预期金额；收费标准原有算法保持不变。
+- 水表、电表初始化方案作为非 `AT-` 环境基线创建并保留；燃气表、空调专项回归使用 `AT-`
+  名称，按独立清理阶段的完整名称精确删除。不得把初始化基线加入回归清理名单。
+- 按住户计费面积系数方式的阶梯面积上下限必须满足当前后端连续且非空校验；创建后必须
+  按名称回查并核对仪表类型、公共仪表、收费项/标准、公摊方式和两个参与房间。
+- `scripts/create_initial_instrument_public_share_schemes.py` 仅负责水表/电表正式基线初始化；
+  `scripts/run_instrument_public_share_regression.py --allow-create --allow-cleanup` 负责燃气/空调
+  AT 专项串行创建及精确清理。两者均需显式授权开关。
+
+### 测试数据清理边界
+
+- 新环境初始化使用 `scripts/create_initial_public_share_schemes.py`，正式方案不带 `AT-` 前缀，
+  只创建/校验并长期保留；不得把初始化脚本接入回归清理。
+- 初始化脚本创建的正式业务方案不参与自动清理；只有本次回归创建且名称带 `AT-` 前缀的方案允许删除。
+- 创建与清理分离为两个显式开关：创建使用 `ALLOW_PUBLIC_SHARE_SCHEME_CREATION`，清理同时要求 `CLEANUP_PUBLIC_SHARE_SCHEMES` 与 `ALLOW_PUBLIC_SHARE_SCHEME_DELETION`。
+- 清理必须按自动化记录的精确方案名称逐条执行并复查列表归零，禁止按模糊关键字、行号或全量删除。
+- 清理失败必须使测试失败，不得把残留数据报告为通过；清理完成后才允许进入后续依赖公摊方案的场景。
+
+## Serial regression compatibility rules (latest project addendum)
+
+These rules capture the failures found during the 2026-09-21 periodic
+public-share calculation regression and take precedence over weaker, older
+locator assumptions:
+
+- Activate the target business tab before inspecting or closing any mounted
+  iframe/drawer. If a previous calculation detail remains visible, or the
+  calculation home shows more than the two normal `开始计算` actions, reload
+  the authenticated customer Home once and reopen the target tab. Never carry
+  a stale drawer into the next parameterized case.
+- Treat the calculation flow as a state machine: home -> configuration drawer
+  -> rule detail -> pending card -> reconciliation -> audit -> Bill Center
+  cleanup. Each transition must wait for a real visible business state; a
+  fixed sleep or a generic iframe index is not a state assertion.
+- The backend may return a transient `创建失败` toast. Detect failure toasts
+  before the success wait, save a compact diagnostic artifact, and retry the
+  same configured action at most once. If the retry fails, stop the case and
+  preserve the original error; do not loop indefinitely or treat it as passed.
+- Element UI may display overlapping success/error toasts. Do not assert
+  uniqueness over the whole visible toast collection; poll the collection and
+  accept the expected business message when any visible toast matches it.
+- Every parameterized case must reset page state and execute pending-card
+  cleanup in `finally`, including failures before final submission. A batch
+  may enter the next case only after the current case's page state is clean.
+- A batch is stable only when it passes the selected cases from a fresh login,
+  leaves zero pending cards and zero business-key-matched residual bills, and
+  no manual intervention is needed. A single successful rerun after a first
+  failure is evidence of recovery, not proof of compatibility.

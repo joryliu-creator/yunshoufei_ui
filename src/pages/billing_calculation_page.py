@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 
@@ -193,11 +194,49 @@ class BillingCalculationPage(BasePage):
                 f"实际可见 {len(visible)} 个。"
             )
         visible[0].click(force=True)
-        drawer = self.frame.locator(".el-drawer:visible").filter(
-            has_text="常规类出账-费用计算"
+        drawer_candidates = [
+            self.frame.locator(".el-drawer:visible").filter(
+                has_text="常规类出账-费用计算"
+            ),
+            self.shell_frame.locator(".el-drawer:visible").filter(
+                has_text="常规类出账-费用计算"
+            ),
+        ]
+        for _ in range(30):
+            candidates = list(drawer_candidates)
+            # Element UI may teleport the drawer into a sibling business
+            # iframe after the first tab switch.  Search all currently
+            # attached frames as a bounded fallback instead of assuming the
+            # click and the drawer share the same frame.
+            for frame in self.page.frames:
+                candidates.append(
+                    frame.locator(".el-drawer:visible").filter(
+                        has_text="常规类出账-费用计算"
+                    )
+                )
+            for drawer in candidates:
+                if drawer.count() == 1 and drawer.is_visible():
+                    return drawer
+            self.page.wait_for_timeout(500)
+        from pathlib import Path
+
+        Path("artifacts").mkdir(exist_ok=True)
+        self.page.screenshot(
+            path="artifacts/calculation-drawer-open-miss.png", full_page=True
         )
-        expect(drawer).to_have_count(1, timeout=15_000)
-        return drawer
+        (Path("artifacts") / "calculation-drawer-open-miss.txt").write_text(
+            "\n--- page frames ---\n"
+            + "\n".join(frame.url for frame in self.page.frames)
+            + "\n--- selected frame ---\n"
+            + self.frame.locator("body").inner_text()
+            + "\n--- shell frame ---\n"
+            + self.shell_frame.locator("body").inner_text(),
+            encoding="utf-8",
+        )
+        raise AssertionError(
+            "点击常规类开始计算后未找到常规类出账抽屉；"
+            f"当前计费帧开始计算按钮数={self.frame.get_by_text('开始计算', exact=True).count()}"
+        )
 
     def open_temporary_calculation(self) -> Locator:
         """Open the right-hand 临时类出账 card, never the regular card."""
@@ -574,7 +613,10 @@ class BillingCalculationPage(BasePage):
         self._set_rule_day(details, "最晚缴款日期为", data.latest_payment_day)
         monthly_detail = details.get_by_text(data.billing_month.replace("-", "年") + "月")
         expect(monthly_detail).to_be_visible(timeout=15_000)
-        expect(details).to_contain_text(f"{data.billing_month}-01")
+        expected_receivable_date = (
+            f"{data.billing_month}-{int(data.receivable_day):02d}"
+        )
+        expect(details).to_contain_text(expected_receivable_date)
 
     def start_calculation(self, details: Locator) -> None:
         buttons = self.frame.get_by_role("button", name="开始计算", exact=True)
@@ -599,14 +641,82 @@ class BillingCalculationPage(BasePage):
         positioned = [(item, item.bounding_box()) for item in visible]
         positioned = [(item, box) for item, box in positioned if box is not None]
         target = max(positioned, key=lambda pair: pair[1]["y"])[0] if positioned else visible[-1]
-        target.click(force=True)
-        expect(self.frame.locator(".el-message:visible")).to_contain_text(
-            "账单创建计算中", timeout=30_000
-        )
+        # A backend rejection is rendered as a short-lived Element UI error
+        # toast (for example, ``创建失败``).  Waiting for the success toast
+        # alone makes every rejected case burn the full 30 seconds and leaves
+        # its drawer mounted for the next parameterized case. Poll both
+        # outcomes, retry one transient rejection, then persist the exact
+        # message before failing fast.
+        message = self.frame.locator(".el-message:visible")
+        success_seen = False
+        error_messages: list[str] = []
+        for attempt in range(2):
+            target.click(force=True)
+            for _ in range(60):
+                texts = [
+                    text.strip()
+                    for text in message.all_inner_texts()
+                    if text.strip()
+                ]
+                error_messages = texts
+                failure_texts = [
+                    text
+                    for text in texts
+                    if (
+                        "创建失败" in text
+                        or "出账失败" in text
+                        or ("失败" in text and "计算中" not in text)
+                    )
+                ]
+                if failure_texts:
+                    if attempt == 0:
+                        # Let the first toast fade before retrying the same
+                        # configured drawer; no second login or navigation is
+                        # needed and the backend request is idempotent here.
+                        for _ in range(10):
+                            self.page.wait_for_timeout(500)
+                            if not any(
+                                "失败" in text
+                                for text in self.frame.locator(
+                                    ".el-message:visible"
+                                ).all_inner_texts()
+                            ):
+                                break
+                        break
+                    from pathlib import Path
+
+                    Path("artifacts").mkdir(exist_ok=True)
+                    Path("artifacts/calculation-start-error.txt").write_text(
+                        "\n".join(failure_texts), encoding="utf-8"
+                    )
+                    self.page.screenshot(
+                        path="artifacts/calculation-start-error.png", full_page=True
+                    )
+                    raise AssertionError(
+                        "计费出账开始计算被后端拒绝："
+                        + ("；".join(failure_texts) or "未知错误")
+                    )
+                if any("账单创建计算中" in text for text in texts):
+                    success_seen = True
+                    break
+                self.page.wait_for_timeout(500)
+            if success_seen:
+                break
+        if not success_seen:
+            raise AssertionError(
+                "等待计费出账开始计算反馈超时："
+                + ("；".join(error_messages) or "无可见反馈")
+            )
         expect(details).to_be_hidden(timeout=30_000)
 
-    def reconcile_and_approve(self, data: CalculationData) -> None:
-        card = self._wait_for_pending_bill(data.billing_month)
+    def reconcile_and_approve(
+        self, data: CalculationData, expected_amount: str | None = None
+    ) -> None:
+        card = self._wait_for_pending_bill(
+            data.billing_month,
+            charge_item=data.charge_item,
+            expected_amount=expected_amount,
+        )
         expect(card).to_contain_text("待核对", timeout=180_000)
         reconcile = card.get_by_text("核对账单", exact=True)
         if reconcile.count() != 1:
@@ -616,17 +726,44 @@ class BillingCalculationPage(BasePage):
         submit = details.locator(".bottom-wrap .btn2")
         if submit.count() == 0:
             submit = details.get_by_role("button", name="提交审核", exact=True)
-        self.require_single(submit, "提交审核操作").evaluate("el => el.click()")
-        try:
-            expect(self.frame.locator(".el-message:visible")).to_contain_text(
-                "提交审核成功", timeout=10_000
+        submit = self.require_single(submit, "提交审核操作")
+        submit_error = ""
+        submitted = False
+        for attempt in range(2):
+            submit.evaluate("el => el.click()")
+            try:
+                expect(self.frame.locator(".el-message:visible")).to_contain_text(
+                    "提交审核成功", timeout=10_000
+                )
+                submitted = True
+                break
+            except AssertionError:
+                messages = [
+                    text.strip()
+                    for text in self.frame.locator(".el-message:visible").all_inner_texts()
+                    if text.strip()
+                ]
+                submit_error = "；".join(messages)
+                try:
+                    expect(details).to_be_hidden(timeout=5_000)
+                    submitted = True
+                    break
+                except AssertionError:
+                    if attempt == 0:
+                        self.page.wait_for_timeout(2_000)
+                        continue
+        if not submitted:
+            raise AssertionError(
+                "提交审核未成功且详情抽屉未关闭；"
+                f"页面反馈={submit_error or '无可见反馈'}"
             )
-        except AssertionError:
-            # The toast is short-lived on Standard1; closing the detail drawer
-            # is the durable success signal and is followed by status polling.
-            expect(details).to_be_hidden(timeout=30_000)
 
-        audit_card = self._wait_for_pending_bill(data.billing_month, "审核账单")
+        audit_card = self._wait_for_pending_bill(
+            data.billing_month,
+            "审核账单",
+            charge_item=data.charge_item,
+            expected_amount=expected_amount,
+        )
         expect(audit_card).to_contain_text("待审核", timeout=30_000)
         audit = audit_card.get_by_text("审核账单", exact=True)
         if audit.count() != 1:
@@ -670,9 +807,24 @@ class BillingCalculationPage(BasePage):
         if confirm.count() == 0:
             confirm = audit_drawer.get_by_text("确定", exact=True)
         self.require_single(confirm, "审核确认操作").evaluate("el => el.click()")
-        expect(self.frame.locator(".el-message:visible")).to_contain_text(
-            re.compile(r"审核.*成功"), timeout=30_000
-        )
+        # Multiple success toasts can overlap here: the earlier calculation
+        # toast may still be fading while the audit confirmation toast is
+        # shown.  Do not use a strict locator assertion over the whole toast
+        # collection; accept the audit-success message when any visible toast
+        # matches it.
+        audit_success = False
+        for _ in range(60):
+            messages = [
+                text.strip()
+                for text in self.frame.locator(".el-message:visible").all_inner_texts()
+                if text.strip()
+            ]
+            if any(re.search(r"审核.*成功", text) for text in messages):
+                audit_success = True
+                break
+            self.page.wait_for_timeout(500)
+        if not audit_success:
+            raise AssertionError("审核确认未出现成功反馈。页面反馈=" + ("；".join(messages) or "无可见反馈"))
 
     def cleanup_pending_records(
         self, reject_reason: str = "auto自动驳回"
@@ -791,8 +943,15 @@ class BillingCalculationPage(BasePage):
 
         return removed
 
-    def assert_pending_amount(self, billing_month: str, expected_amount: str) -> None:
-        card = self._wait_for_pending_bill(billing_month)
+    def assert_pending_amount(
+        self,
+        billing_month: str,
+        expected_amount: str,
+        charge_item: str | None = None,
+    ) -> None:
+        card = self._wait_for_pending_bill(
+            billing_month, charge_item=charge_item, expected_amount=expected_amount
+        )
         normalized = expected_amount.replace(",", "")
         expect(card).to_contain_text(
             re.compile(rf"{re.escape(normalized)}(?:\.0+)?"), timeout=180_000
@@ -1099,39 +1258,74 @@ class BillingCalculationPage(BasePage):
         selectors = row.locator("input[readonly]:visible")
         if selectors.count() != 1:
             raise AssertionError(
-                f"{label}规则行应有一个日选择框，实际 {selectors.count()} 个。"
+                f"{label}规则行应有一个日期选择框，实际 {selectors.count()} 个。"
             )
-        selectors.first.click()
-        visible = []
-        for scope in (self.frame, self.shell_frame):
-            option = scope.get_by_text(day, exact=True)
-            visible.extend(
-                option.nth(index)
-                for index in range(option.count())
-                if option.nth(index).is_visible()
-            )
-        if not visible:
-            raise AssertionError(
-                f"{label}的日选项 {day!r} 应唯一可见，实际 {len(visible)} 个。"
-            )
-        # Element UI's popup can briefly be covered by the drawer overlay while
-        # it is being repositioned; force the click only after visibility was
-        # established and the option list was deduplicated above.
-        viewport = self.page.viewport_size or {"width": 0, "height": 0}
-        in_view = []
-        for candidate in visible:
-            box = candidate.bounding_box()
-            if box and 0 <= box["x"] < viewport["width"] and 0 <= box["y"] < viewport["height"]:
-                in_view.append(candidate)
-        # Let the Element UI select component commit its own change event.
-        # This avoids clicking a cloned portal node that looks visible but is
-        # not the active option list.
-        selectors.first.press("ArrowDown")
-        selectors.first.press("Enter")
-        expect(selectors.first).to_have_value(day)
 
+        selector = selectors.first
+        selector.click()
+        expected_day = int(day)
+        scopes = [self.frame, self.shell_frame, *self.page.frames]
+        popup_selector = (
+            ".el-select-dropdown:visible, .el-picker-panel:visible, "
+            ".el-popover:visible, [role='listbox']:visible"
+        )
+        item_selector = (
+            ".el-select-dropdown__item:visible, [role='option']:visible"
+        )
+        observed: list[str] = []
+        for _ in range(30):
+            observed = []
+            for scope in scopes:
+                popups = scope.locator(popup_selector)
+                for popup_index in range(popups.count() - 1, -1, -1):
+                    popup = popups.nth(popup_index)
+                    items = popup.locator(item_selector)
+                    matches: list[Locator] = []
+                    for item_index in range(items.count()):
+                        item = items.nth(item_index)
+                        text = item.inner_text().strip()
+                        if text:
+                            observed.append(text[:40])
+                        normalized_text = (
+                            text.removesuffix("日").removesuffix("号").strip()
+                        )
+                        match = re.fullmatch(
+                            r"0?([1-9]|[12][0-9]|3[01])",
+                            normalized_text,
+                        )
+                        if match and int(match.group(1)) == expected_day:
+                            matches.append(item)
+                    if not matches:
+                        exact = popup.get_by_text(day, exact=True)
+                        matches = [
+                            exact.nth(index)
+                            for index in range(exact.count())
+                            if exact.nth(index).is_visible()
+                        ]
+                    if matches:
+                        target = matches[-1]
+                        target.evaluate("el => el.click()")
+                        for _ in range(30):
+                            value = selector.input_value().strip()
+                            if value == day or (
+                                value.isdigit() and int(value) == expected_day
+                            ):
+                                return
+                            self.page.wait_for_timeout(100)
+            self.page.wait_for_timeout(200)
+
+        raise AssertionError(
+            f"{label}日选择项 {day!r} 未出现或未提交；"
+            f"输入值={selector.input_value()!r}；"
+            f"行HTML={row.evaluate('el => el.outerHTML')[:900]!r}；"
+            f"弹层选项={observed[:40]!r}"
+        )
     def _wait_for_pending_bill(
-        self, billing_month: str, action_text: str = "核对账单"
+        self,
+        billing_month: str,
+        action_text: str = "核对账单",
+        charge_item: str | None = None,
+        expected_amount: str | None = None,
     ) -> Locator:
         scopes = self._calculation_scopes()
         for scope in scopes:
@@ -1145,7 +1339,10 @@ class BillingCalculationPage(BasePage):
                 visible[-1].click(force=True)
                 break
         pattern = re.compile(rf"账单\s*{re.escape(billing_month)}")
-        deadline_ms = 180_000
+        timeout_seconds = max(
+            15, int(os.getenv("CALCULATION_PENDING_TIMEOUT_SECONDS", "60"))
+        )
+        deadline_ms = timeout_seconds * 1_000
         elapsed_ms = 0
         while elapsed_ms < deadline_ms:
             for scope in scopes:
@@ -1153,11 +1350,20 @@ class BillingCalculationPage(BasePage):
                 # The action is a styled div in this module rather than a
                 # semantic button. Use the exact card action text and choose
                 # the smallest matching container, not DOM order.
-                candidates = [
-                    cards.nth(index)
-                    for index in range(cards.count())
-                    if cards.nth(index).get_by_text(action_text, exact=True).count() > 0
-                ]
+                candidates = []
+                for index in range(cards.count()):
+                    candidate = cards.nth(index)
+                    if candidate.get_by_text(action_text, exact=True).count() == 0:
+                        continue
+                    # Some Standard1 builds omit the charge-item label from
+                    # the pending card.  Keep the card and use the exact
+                    # expected amount as the disambiguating business key;
+                    # the charge item remains part of the calculation input.
+                    if expected_amount:
+                        normalized = expected_amount.replace(",", "")
+                        if normalized not in candidate.inner_text().replace(",", ""):
+                            continue
+                    candidates.append(candidate)
                 if candidates:
                     return min(candidates, key=lambda item: item.locator("*").count())
             self.page.wait_for_timeout(1_000)

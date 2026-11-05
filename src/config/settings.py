@@ -119,7 +119,7 @@ class Settings:
         runtime = excel_data.runtime_parameters
 
         def runtime_value(name: str, default: str = "") -> str:
-            value = runtime.get(name, "").strip()
+            value = os.getenv(f"PLATFORM_CASE_PARAM_{name}", "").strip() or runtime.get(name, "").strip()
             return value or default
 
         def runtime_date(name: str) -> str:
@@ -149,7 +149,7 @@ class Settings:
             latest_payment_date=runtime_date("LATEST_PAYMENT_DATE"),
             allow_bill_creation=allow_bill_creation,
             skip_bill_notification=_text_as_bool(
-                runtime.get("SKIP_BILL_NOTIFICATION"), True
+                os.getenv("PLATFORM_CASE_PARAM_SKIP_BILL_NOTIFICATION") or runtime.get("SKIP_BILL_NOTIFICATION"), True
             ),
             cleanup_created_bill=cleanup_created_bill,
             allow_bill_deletion=allow_bill_deletion,

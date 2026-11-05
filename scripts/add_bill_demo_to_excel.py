@@ -18,7 +18,9 @@ from src.domain.periodic_charge import (
     calculate_periodic_amount,
 )
 from src.domain.meter_charge import MeterReadingBasis, calculate_meter_amount
+from src.domain.public_share_charge import PUBLIC_SHARE_BILL_CASES
 from scripts.update_room_import_template import CHARGE_ITEM_NAMES
+from src.config.standard_name import automation_standard_name
 
 
 OUTPUT = ROOT / "UI自动化回归测试用例模板_Demo.xlsx"
@@ -84,7 +86,7 @@ CASE = [
 
 
 CALCULATION_CASE = [
-    "YSF-CALC-001",
+    "YSF-CALC-PERIODIC-1001",
     "云收费",
     "智能计费/计费出账",
     "常规类出账",
@@ -122,7 +124,7 @@ CALCULATION_CASE = [
 
 
 TEMPORARY_CASES = [[
-    "YSF-BILL-TEMP-001",
+    "YSF-BILL-TEMP-1016",
     "云收费",
     "智能计费/临时台账",
     "创建并清理临时账单",
@@ -233,17 +235,17 @@ def temporary_scenario_row(
 
 TEMPORARY_CASES.extend([
     temporary_case_row(
-        "YSF-BILL-TEMP-002", "YSF-SCENE-TEMP-1013", "1013",
+        "YSF-BILL-TEMP-1013", "YSF-SCENE-TEMP-1013", "1013",
         "UI临时类-面积多阶梯固定金额（不同建筑面积，不同固定金额）",
         "1013房间面积阶梯固定金额临时账单创建、金额断言及清理", "15.00",
     ),
     temporary_case_row(
-        "YSF-BILL-TEMP-003", "YSF-SCENE-TEMP-1014", "1014",
+        "YSF-BILL-TEMP-1014", "YSF-SCENE-TEMP-1014", "1014",
         "UI临时类-楼层多阶梯固定金额（不同楼层，不同固定金额）",
         "1014房间楼层阶梯固定金额临时账单创建、金额断言及清理", "100.00",
     ),
     temporary_case_row(
-        "YSF-BILL-TEMP-004", "YSF-SCENE-TEMP-1015", "1015",
+        "YSF-BILL-TEMP-1015", "YSF-SCENE-TEMP-1015", "1015",
         "UI临时类-人工输入收费金额",
         "1015房间人工输入金额临时账单创建、金额断言及清理", "200.00", "200",
     ),
@@ -270,42 +272,42 @@ TEMPORARY_SCENARIO_ROWS.extend([
 
 TEMPORARY_CASES.extend([
     temporary_case_row(
-        "YSF-BILL-TEMP-005", "YSF-SCENE-TEMP-1012", "1012",
+        "YSF-BILL-TEMP-1012", "YSF-SCENE-TEMP-1012", "1012",
         "UI临时类-仪表无阶梯（固定单价*用量*系数）",
         "1012房间仪表系数公式临时账单创建、金额断言及清理", "120.00",
         calculation_step="仪表用量取已导入的20，按单价3、系数2计算预期金额",
     ),
     temporary_case_row(
-        "YSF-BILL-TEMP-006", "YSF-SCENE-TEMP-1017", "1017",
+        "YSF-BILL-TEMP-1017", "YSF-SCENE-TEMP-1017", "1017",
         "UI临时类-天数公式（天单价*建筑面积*天数）",
         "1017房间建筑面积天数公式临时账单创建、金额断言及清理", "120048.00",
         calculation_step="计费期间选择今天至明天两天，按建筑面积300.12、天单价200计算预期金额",
     ),
     temporary_case_row(
-        "YSF-BILL-TEMP-007", "YSF-SCENE-TEMP-1018", "1018",
+        "YSF-BILL-TEMP-1018", "YSF-SCENE-TEMP-1018", "1018",
         "UI临时类-天数公式（天单价*使用面积*天数）",
         "1018房间使用面积天数公式临时账单创建、金额断言及清理", "112004.00",
         calculation_step="计费期间选择今天至明天两天，按使用面积280.01、天单价200计算预期金额",
     ),
     temporary_case_row(
-        "YSF-BILL-TEMP-008", "YSF-SCENE-TEMP-1019", "1019",
+        "YSF-BILL-TEMP-1019", "YSF-SCENE-TEMP-1019", "1019",
         "UI临时类-天数公式（天单价*收费面积*天数）",
         "1019房间收费面积天数公式临时账单创建、金额断言及清理", "104000.00",
         calculation_step="计费期间选择今天至明天两天，按收费面积260.00、天单价200计算预期金额",
     ),
     temporary_case_row(
-        "YSF-BILL-TEMP-009", "YSF-SCENE-TEMP-1020", "1020",
+        "YSF-BILL-TEMP-1020", "YSF-SCENE-TEMP-1020", "1020",
         "UI临时类-数量公式（数量*单价）",
         "1020房间数量公式临时账单创建、金额断言及清理", "200.00",
         calculation_step="数量填写10，按单价20计算预期金额",
     ),
     temporary_case_row(
-        "YSF-BILL-TEMP-010", "YSF-SCENE-TEMP-1059", "1059",
+        "YSF-BILL-TEMP-1059", "YSF-SCENE-TEMP-1059", "1059",
         "UI临时类-面积多阶梯固定金额（不同使用面积，不同固定金额）",
         "1059房间使用面积阶梯固定金额临时账单创建、金额断言及清理", "15.00",
     ),
     temporary_case_row(
-        "YSF-BILL-TEMP-011", "YSF-SCENE-TEMP-1060", "1060",
+        "YSF-BILL-TEMP-1060", "YSF-SCENE-TEMP-1060", "1060",
         "UI临时类-面积多阶梯固定金额（不同收费面积，不同固定金额）",
         "1060房间收费面积阶梯固定金额临时账单创建、金额断言及清理", "15.00",
     ),
@@ -590,7 +592,9 @@ def meter_scenario_rows():
         except KeyError as exc:
             raise ValueError(f"仪表 {meter_no} 缺少 2026-07 或 2026-08 抄表数据") from exc
         formula = str(mapping_sheet.cell(row, mapping_headers["计费公式"]).value or "").strip()
-        standard_name = str(mapping_sheet.cell(row, mapping_headers["建议收费标准名称"]).value or "").strip()
+        standard_name = automation_standard_name(
+            str(mapping_sheet.cell(row, mapping_headers["建议收费标准名称"]).value or "").strip()
+        )
         pricing_parameters = str(mapping_sheet.cell(row, mapping_headers["计价参数"]).value or "").strip()
         basis = MeterReadingBasis(
             period_usage=period_usage,
@@ -630,7 +634,43 @@ def meter_scenario_rows():
 
 METER_SCENARIO_ROWS = meter_scenario_rows()
 METER_CASES = meter_case_rows(METER_SCENARIO_ROWS)
-SCENARIO_ROWS = periodic_scenario_rows() + METER_SCENARIO_ROWS + TEMPORARY_SCENARIO_ROWS + [
+
+
+def public_share_scenario_rows() -> list[list[str]]:
+    """Build ten room-level August scenarios from formal public-share schemes."""
+    donor = list(periodic_scenario_rows()[0])
+    rows: list[list[str]] = []
+    for case in PUBLIC_SHARE_BILL_CASES:
+        row = list(donor)
+        row[0] = f"YSF-SCENE-PUBLIC-SHARE-PERIODIC-CALC-{case.room}"
+        row[1] = f"PUBLIC-SHARE-{case.scheme_key}-{case.room}-2026-08"
+        row[5] = f"A栋/1层/{case.room}"
+        row[10] = "公摊周期性收费项"
+        row[11] = "UI公摊周期性收费标准"
+        row[15] = "PUBLIC_SHARE_ALLOCATION"
+        row[16] = case.calculation_parameters
+        row[17] = "2026-08"
+        row[19] = format(case.expected_amount, "f")
+        row[21] = format(case.expected_amount, "f")
+        row[23] = (
+            f"formal scheme {case.scheme_key} must exist; pair={','.join(case.pair)}; "
+            "room has no independent fee-item mapping"
+        )
+        row[29] = (
+            f"periodic public-share validation; method={case.method_key}; "
+            f"pair={','.join(case.pair)}; expected room allocation={case.expected_amount:f}"
+        )
+        rows.append(row)
+    return rows
+
+
+PUBLIC_SHARE_SCENARIO_ROWS = public_share_scenario_rows()
+SCENARIO_ROWS = (
+    periodic_scenario_rows()
+    + PUBLIC_SHARE_SCENARIO_ROWS
+    + METER_SCENARIO_ROWS
+    + TEMPORARY_SCENARIO_ROWS
+    + [
     [
         "TEMPLATE-PERIODIC-FIXED", "复制后修改-周期固定金额", "", "", "", "", "", "", "",
         "周期类", "", "", "", "", "", "固定金额", "FIXED_AMOUNT=", "", "无减免", "", "0", "",
@@ -658,12 +698,17 @@ SCENARIO_ROWS = periodic_scenario_rows() + METER_SCENARIO_ROWS + TEMPORARY_SCENA
         "临时类", "", "", "", "", "", "数量×单价", "QUANTITY=\nUNIT_PRICE=", "", "无减免", "", "0", "",
         "四舍五入保留2位", "", "否", "模板", "否", "", "", "模板行，请复制并更换场景编号",
     ],
-]
+    ]
+)
 
 
 def calculation_case_rows() -> list[list[str]]:
     """为所有已核验的周期类和仪表类场景生成计费出账用例。"""
     rows = [CALCULATION_CASE]
+    # Keep the legacy 1001 calculation case aligned with the maintained
+    # CALC-specific scenario created by the entrypoint matrix.
+    rows[0] = list(rows[0])
+    rows[0][10] = "SCENARIO_ID=YSF-SCENE-PERIODIC-CALC-001"
     for scenario in SCENARIO_ROWS:
         scenario_id = str(scenario[0] or "")
         charge_type = str(scenario[9] or "")
@@ -674,6 +719,8 @@ def calculation_case_rows() -> list[list[str]]:
         room_path = str(scenario[5] or "")
         room_name = room_path.rsplit("/", 1)[-1]
         kind = "PERIODIC" if charge_type == "周期类" else "METER"
+        if scenario_id.startswith("YSF-SCENE-PUBLIC-SHARE-PERIODIC-"):
+            kind = "PUBLIC-SHARE-PERIODIC"
         case = list(CALCULATION_CASE)
         case[0] = f"YSF-CALC-{kind.upper()}-{room_name}"
         case[4] = f"{room_name}房间{charge_type}常规计费出账、审核及账单清理"

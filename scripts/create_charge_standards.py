@@ -26,6 +26,7 @@ from src.pages.charge_standard_page import (  # noqa: E402
 )
 from src.pages.portal_page import PortalPage  # noqa: E402
 from scripts.save_auth import load_credentials  # noqa: E402
+from src.config.standard_name import automation_standard_name  # noqa: E402
 
 
 SUPPORTED_FORMULAS = {FULL_MONTH_FORMULA}
@@ -40,6 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--account", default="default")
     parser.add_argument("--project", default="云收费UI自动化")
     parser.add_argument("--rooms", nargs="+", required=True)
+    parser.add_argument(
+        "--automation-names",
+        action="store_true",
+        help="创建自动化专项用的 AT- 收费标准；默认使用房间映射表中的业务名称。",
+    )
     parser.add_argument("--headful", action="store_true")
     parser.add_argument(
         "--fresh-login",
@@ -87,7 +93,9 @@ def restore_session(context, profile, base_url: str) -> None:
     )
 
 
-def to_data(mapping, project: str) -> ChargeStandardData:
+def to_data(
+    mapping, project: str, *, automation_names: bool = True
+) -> ChargeStandardData:
     parameters = {
         part.split("=", 1)[0]: part.split("=", 1)[1]
         for part in mapping.calculation_parameters.split(";")
@@ -114,7 +122,11 @@ def to_data(mapping, project: str) -> ChargeStandardData:
             ("10000", "", "2000"),
         )
     return ChargeStandardData(
-        name=mapping.standard_name,
+        name=(
+            automation_standard_name(mapping.standard_name)
+            if automation_names
+            else mapping.standard_name
+        ),
         charge_type=UI_CHARGE_TYPES.get(mapping.charge_type, mapping.charge_type),
         charge_item=CHARGE_ITEM_NAMES[mapping.charge_type],
         project_name=project,
@@ -124,9 +136,11 @@ def to_data(mapping, project: str) -> ChargeStandardData:
         monthly_unit_price=parameters.get("月单价", ""),
         fixed_monthly_amount=parameters.get("月固定金额", ""),
         coefficient=parameters.get("系数", ""),
+        # “楼层阶梯”同名参数在仪表多阶梯公式中表示用量/系数档位，
+        # 不应误走周期/临时类的“新增楼层行”控件。
         floor_tiers=(
             (("1", "10", "2"), ("11", "20", "3"))
-            if "楼层阶梯" in parameters
+            if "楼层阶梯" in parameters and "周期阶梯计费" in formula
             else ()
         ),
         floor_fixed_tiers=(
@@ -278,7 +292,11 @@ def main() -> None:
                         "--inspect-room 必须同时包含在 --rooms 中。"
                     )
                 inspections[room] = standards.inspect_dynamic_fields(
-                    to_data(mapping, args.project)
+                    to_data(
+                        mapping,
+                        args.project,
+                        automation_names=args.automation_names,
+                    )
                 )
                 print(json.dumps(
                     {room: inspections[room]},
@@ -302,7 +320,11 @@ def main() -> None:
                     result["reason"] = mapping.creation_policy
                     results.append(result)
                     continue
-                data = to_data(mapping, args.project)
+                data = to_data(
+                    mapping,
+                    args.project,
+                    automation_names=args.automation_names,
+                )
                 exists = standards.exists(data.name)
                 if args.verify_only:
                     result["status"] = "exists" if exists else "missing"

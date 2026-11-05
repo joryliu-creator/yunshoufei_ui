@@ -53,10 +53,18 @@ def main() -> None:
     # for every periodic room, including the existing 1001 demo as an explicit
     # entry-point ID.
     for base_id, base_row in list(scenario_rows.items()):
-        if not base_id.startswith("YSF-SCENE-PERIODIC-CALC-"):
+        if not (
+            base_id.startswith("YSF-SCENE-PERIODIC-CALC-")
+            or base_id.startswith("YSF-SCENE-PUBLIC-SHARE-PERIODIC-")
+        ):
             continue
         room = base_id.rsplit("-", 1)[-1]
-        bill_scenario_id = f"YSF-SCENE-PERIODIC-BILL-{room}"
+        is_public_share = base_id.startswith("YSF-SCENE-PUBLIC-SHARE-PERIODIC-")
+        bill_scenario_id = (
+            f"YSF-SCENE-PUBLIC-SHARE-PERIODIC-BILL-{room}"
+            if is_public_share
+            else f"YSF-SCENE-PERIODIC-BILL-{room}"
+        )
         target = scenario_rows.get(bill_scenario_id)
         if target is None:
             target = scenarios.max_row + 1
@@ -72,7 +80,11 @@ def main() -> None:
         standard = str(scenario[11] or "")
         item = str(scenario[10] or "")
         room_path = str(scenario[5] or "")
-        case_id = f"YSF-BILL-PERIODIC-{room}"
+        case_id = (
+            f"YSF-BILL-PUBLIC-SHARE-PERIODIC-{room}"
+            if is_public_share
+            else f"YSF-BILL-PERIODIC-{room}"
+        )
         cr = case_ids.get(case_id)
         if cr is None:
             cr = cases.max_row + 1

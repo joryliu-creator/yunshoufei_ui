@@ -129,7 +129,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--test-target",
-        help="只运行一个 pytest 目标，用于脚本冒烟验证；可填写完整 nodeid",
+        action="append",
+        help="选择 pytest 目标；可重复指定多个完整 nodeid，在同一会话串行运行",
     )
     parser.add_argument(
         "--skip-post-cleanup", action="store_true",
@@ -176,7 +177,7 @@ def main() -> int:
         part for part in (str(ROOT), str(ROOT / ".tools" / "python"), existing_pythonpath) if part
     )
 
-    common_pytest_args = ["-v", "--test-env", environment]
+    common_pytest_args = ["-v", "-p", "scripts.pytest_failure_summary", "--test-env", environment]
     if args.customer_id:
         common_pytest_args.extend(["--customer-id", args.customer_id.strip()])
     if args.account_role:
@@ -186,7 +187,7 @@ def main() -> int:
     if args.test_target and args.shard_count > 1:
         raise SystemExit("--test-target 不能与 --shard-count 同时使用。")
     if args.test_target:
-        selected_targets = [args.test_target]
+        selected_targets = args.test_target
     if args.shard_count > 1 and not args.collect_only and not args.test_target:
         collect_command = [
             sys.executable, "-m", "pytest", "tests/billing", "--collect-only", "-q",

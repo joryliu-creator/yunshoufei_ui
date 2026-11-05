@@ -13,11 +13,12 @@ sys.path.insert(0, str(ROOT))
 from openpyxl import load_workbook
 
 from scripts.update_room_import_template import CHARGE_ITEM_NAMES
+from src.config.standard_name import automation_standard_name
 
 
 TEMPLATE = ROOT / "收费项导入模板.xlsx"
 MAPPING_WORKBOOK = ROOT / "房间收费标准映射表.xlsx"
-METER_IMPORT_WORKBOOK = ROOT / "仪表导入模板.xlsx"
+METER_IMPORT_WORKBOOK = ROOT / "前置数据模版文件" / "仪表导入模板.xlsx"
 METER_TYPES = {"水表仪表类", "电表仪表类"}
 SUPPORTED_IMPORT_TYPES = {"周期类", *METER_TYPES}
 EXPECTED_METER_TYPES = {
@@ -161,7 +162,9 @@ def build_import_rows(
         if charge_type not in CHARGE_ITEM_NAMES:
             raise ValueError(f"未配置收费类型 {charge_type!r} 对应的收费项名称。")
         room_name = str(mapping["房间名称"] or "").strip()
-        standard_name = str(mapping["建议收费标准名称"] or "").strip()
+        standard_name = automation_standard_name(
+            str(mapping["建议收费标准名称"] or "").strip()
+        )
         if not room_name or not standard_name:
             raise ValueError("创建策略为“创建”的映射缺少房间或收费标准名称。")
         room_path = f"{room_prefix}/{room_name}"

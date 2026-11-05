@@ -45,6 +45,7 @@ class TemporaryLedgerPage(BasePage):
         self.frame: FrameLocator = page.frame_locator(
             'iframe[src*="busH5Url"][src*="temporaryBill"]'
         )
+        self.last_submission_confirmed = False
 
     def wait_until_ready(self) -> None:
         launch = self.frame.get_by_role(
@@ -75,6 +76,25 @@ class TemporaryLedgerPage(BasePage):
         ).filter(has_text="高级搜索")
         expect(panels).to_have_count(1, timeout=15_000)
         return panels.first
+
+    def _close_advanced_search_if_open(self) -> None:
+        panels = self.frame.locator(
+            ".el-drawer:visible, .el-dialog:visible"
+        ).filter(has_text="高级搜索")
+        if panels.count() != 1:
+            return
+        panel = panels.first
+        close_buttons = panel.locator(
+            ".el-drawer__close-btn:visible, .el-dialog__headerbtn:visible"
+        )
+        if close_buttons.count() == 1:
+            close_buttons.click(force=True)
+        else:
+            self.page.keyboard.press("Escape")
+        expect(panel).to_be_hidden(timeout=10_000)
+        expect(self.frame.locator(".el-tree:visible")).to_have_count(
+            0, timeout=10_000
+        )
 
     def open_create_temporary_bill(self) -> Locator:
         launch = self.require_single(
@@ -290,6 +310,7 @@ class TemporaryLedgerPage(BasePage):
         """
         post_responses: list[str] = []
         submission_response: Response | None = None
+        self.last_submission_confirmed = False
 
         def record_post_response(response) -> None:
             nonlocal submission_response
@@ -334,30 +355,32 @@ class TemporaryLedgerPage(BasePage):
         expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
             0, timeout=60_000
         )
+        self.last_submission_confirmed = True
 
-        rows = self.frame.locator(
-            ".el-table__body-wrapper tr.el-table__row:visible"
-        ).filter(has_text=data.room_path.split("/")[-1])
-        expect(rows).not_to_have_count(0, timeout=30_000)
+        # The create dialog can close successfully while the default table
+        # remains stale. Refresh via the exact business-key query instead of
+        # assuming the room row is already rendered in the old view.
+        current_bill_numbers = self.get_bill_numbers_by_month_room_charge_item(
+            billing_month=data.billing_month,
+            room_path=data.room_path,
+            charge_item=data.charge_item,
+        )
         before = existing_bill_numbers or set()
-        candidates: list[tuple[Locator, str]] = []
-        for index in range(rows.count()):
-            candidate = rows.nth(index)
-            candidate_text = candidate.inner_text()
-            candidate_number = self._extract_bill_number(candidate_text)
-            if candidate_number not in before:
-                candidates.append((candidate, candidate_text))
+        candidates = [number for number in current_bill_numbers if number not in before]
         if len(candidates) != 1:
             raise AssertionError(
                 "创建后无法仅通过提交前后的唯一账单编号差集确定新记录；"
-                f"提交前={sorted(before)!r}，候选数量={len(candidates)}。"
+                f"提交前数量={len(before)}，提交后数量={len(current_bill_numbers)}，"
+                f"候选数量={len(candidates)}。"
             )
-        row, row_text = candidates[0]
+        bill_number = candidates[0]
+        row = self._find_bill_row(bill_number)
+        expect(row).to_have_count(1, timeout=15_000)
+        row_text = row.inner_text()
         if f"{expected_amount:.2f}" not in row_text:
             raise AssertionError(
                 f"临时账单金额未包含预期 {expected_amount:.2f}；实际行={row_text!r}"
             )
-        bill_number = self._extract_bill_number(row_text)
         return CreatedTemporaryBill(bill_number, row_text, expected_amount)
 
     def visible_bill_numbers_for_room(self, room_name: str) -> set[str]:
@@ -393,6 +416,79 @@ class TemporaryLedgerPage(BasePage):
             require_match=True,
         )
 
+    def get_bill_numbers_by_month_room_charge_item(
+        self, *, billing_month: str, room_path: str, charge_item: str
+    ) -> list[str]:
+        """Read ledger matches by the confirmed business key without mutation."""
+        panels = self.frame.locator(".el-drawer:visible, .el-dialog:visible").filter(
+            has_text="高级搜索"
+        )
+        if panels.count() == 1:
+            search = panels.first
+        else:
+            search = self.open_advanced_search()
+
+        # Follow the current UI order and compatibility rules: charge item,
+        # both billing-month bounds, then bill-object room selection.
+        charge_inputs = search.locator('input[placeholder*="收费项"]')
+        if charge_inputs.count() == 0:
+            charge_inputs = search.locator('input[placeholder="请选择"]')
+        visible_charge_inputs = [
+            charge_inputs.nth(i)
+            for i in range(charge_inputs.count())
+            if charge_inputs.nth(i).is_visible()
+        ]
+        if not visible_charge_inputs:
+            raise AssertionError("临时台账高级搜索收费项控件未可见")
+        charge_input = visible_charge_inputs[-1]
+        if charge_input.get_attribute("readonly") is not None:
+            select_wrapper = charge_input.locator(
+                "xpath=ancestor::*[contains(@class,'el-select')][1]"
+            )
+            if select_wrapper.count() == 1 and select_wrapper.is_visible():
+                select_wrapper.click(force=True)
+            else:
+                charge_input.click(force=True)
+            option = self.frame.locator(
+                ".el-select-dropdown:visible .el-select-dropdown__item"
+            ).filter(has_text=re.compile(rf"^{re.escape(charge_item)}$"))
+            expect(option).to_have_count(1, timeout=20_000)
+            option.scroll_into_view_if_needed(timeout=10_000)
+            option.click(force=True)
+        else:
+            charge_input.fill(charge_item)
+            charge_input.press("Enter")
+
+        month_inputs = search.locator('input[placeholder*="年月"]:visible')
+        expect(month_inputs).to_have_count(2)
+        for index in (0, 1):
+            month_inputs.nth(index).fill(billing_month)
+            month_inputs.nth(index).press("Enter")
+        expect(month_inputs.nth(0)).to_have_value(billing_month)
+        expect(month_inputs.nth(1)).to_have_value(billing_month)
+        self.select_advanced_room_filter(search, room_path)
+
+        search = self._advanced_search_panel()
+        submit = self.require_single(
+            search.get_by_role("button", name="搜索", exact=True),
+            "临时台账高级搜索提交按钮",
+        )
+        submit.click(force=True)
+        expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
+            0, timeout=60_000
+        )
+        rows = self.frame.locator(
+            ".el-table__body-wrapper tr.el-table__row:visible"
+        )
+        numbers: list[str] = []
+        for index in range(rows.count()):
+            try:
+                numbers.append(self._extract_bill_number(rows.nth(index).inner_text()))
+            except AssertionError:
+                # Fixed-column fragments may not contain the bill number.
+                continue
+        return list(dict.fromkeys(numbers))
+
     def cleanup_by_month_room_charge_item(
         self, *, billing_month: str, room_path: str, charge_item: str,
         void_reason: str, expected_bill_number: str | None = None,
@@ -403,6 +499,10 @@ class TemporaryLedgerPage(BasePage):
         The bill number is extracted only after the business-key query and is
         never used as the search/filter input.
         """
+        # A previous query can leave a drawer mounted with controls that have
+        # since been hidden/replaced. Reopen it cleanly before destructive
+        # operations so the exact-key filters target the current controls.
+        self._close_advanced_search_if_open()
         search = self.open_advanced_search()
         # Newer builds close the drawer when Reset is clicked. Normalize the
         # persistent state by overwriting each business-key field below.

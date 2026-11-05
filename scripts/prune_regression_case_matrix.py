@@ -18,7 +18,7 @@ WORKBOOK = ROOT / "UI自动化回归测试用例模板_Demo.xlsx"
 CASE_SHEET = "用例清单"
 SCENARIO_SHEET = "收费场景配置"
 SCENARIO_PATTERN = re.compile(
-    r"^YSF-SCENE-(PERIODIC|METER|TEMP|DEPOSIT)-(BILL|CALC|LEDGER)-(.+)$"
+    r"^YSF-SCENE-(PUBLIC-SHARE-PERIODIC|PERIODIC|METER|TEMP|DEPOSIT)-(BILL|CALC|LEDGER)-(.+)$"
 )
 
 
@@ -28,10 +28,19 @@ def is_maintained_case(case_id: str, scenario_id: str) -> bool:
         return False
     charge_type, entrypoint, room = match.groups()
 
+    if charge_type == "PUBLIC-SHARE-PERIODIC" and entrypoint == "BILL":
+        return case_id == f"YSF-BILL-PUBLIC-SHARE-PERIODIC-{room}"
+    if charge_type == "PUBLIC-SHARE-PERIODIC" and entrypoint == "CALC":
+        return case_id == f"YSF-CALC-PUBLIC-SHARE-PERIODIC-{room}"
     if charge_type == "PERIODIC" and entrypoint == "BILL":
         return case_id == f"YSF-BILL-PERIODIC-{room}"
+    if charge_type == "PUBLIC-SHARE-PERIODIC" and entrypoint == "BILL":
+        return case_id == f"YSF-BILL-PUBLIC-SHARE-PERIODIC-{room}"
     if charge_type == "PERIODIC" and entrypoint == "CALC":
-        expected = "YSF-CALC-001" if room == "001" else f"YSF-CALC-PERIODIC-{room}"
+        # The legacy 1001 scenario ID ends in 001; the case ID uses the
+        # actual room suffix so reports do not make 001 look like a room.
+        case_room = "1001" if room == "001" else room
+        expected = f"YSF-CALC-PERIODIC-{case_room}"
         return case_id == expected
     if charge_type == "METER" and entrypoint == "BILL":
         return case_id == f"YSF-BILL-METER-{room}"
@@ -60,7 +69,8 @@ def main() -> None:
             str(scenarios.cell(row, 1).value or "").strip()
         )
     }
-    if len(formal_scenarios) != 102:
+    expected_scenario_count = 122
+    if len(formal_scenarios) != expected_scenario_count:
         raise ValueError(f"正式收费场景应为102条，实际为{len(formal_scenarios)}条")
 
     kept: list[tuple[str, str]] = []
@@ -79,12 +89,12 @@ def main() -> None:
             rows_to_delete.append(row)
             removed.append(case_id)
 
-    if len(kept) != 102 or len({case_id for case_id, _ in kept}) != 102:
+    if len(kept) != expected_scenario_count or len({case_id for case_id, _ in kept}) != expected_scenario_count:
         raise ValueError(
             "整理前正式用例不是102条唯一记录："
             f"rows={len(kept)}, unique={len({case_id for case_id, _ in kept})}"
         )
-    if len({scenario_id for _, scenario_id in kept}) != 102:
+    if len({scenario_id for _, scenario_id in kept}) != expected_scenario_count:
         raise ValueError("正式用例没有与102条入口级收费场景一一对应")
 
     for row in reversed(rows_to_delete):

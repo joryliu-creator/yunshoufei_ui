@@ -10,6 +10,7 @@ from scripts.update_room_import_template import formula_mappings
 from src.config.excel_data import load_case_reference, load_excel_test_data
 from src.config.settings import settings
 from src.domain.periodic_charge import PeriodicRoomBasis, calculate_periodic_amount
+from src.domain.public_share_charge import PUBLIC_SHARE_BY_ROOM
 from src.pages.billing_center_page import BillData, BillingCenterPage
 from src.pages.portal_page import PortalPage
 
@@ -21,6 +22,10 @@ PERIODIC_BILL_CASE_IDS = [
     "YSF-BILL-PERIODIC-001",
     *(f"YSF-BILL-PERIODIC-{room}" for room in range(1002, 1012)),
     *(f"YSF-BILL-PERIODIC-{room}" for room in range(1048, 1059)),
+    *(
+        f"YSF-BILL-PUBLIC-SHARE-PERIODIC-{case.room}"
+        for case in PUBLIC_SHARE_BY_ROOM.values()
+    ),
 ]
 
 ROOM_MAPPINGS = {item.room_name: item for item in formula_mappings()}
@@ -47,6 +52,8 @@ def _expected_amount(scenario) -> Decimal:
     """Recalculate the expected amount from the scenario's independent basis."""
     params = _parameters(scenario.calculation_parameters)
     room = scenario.room_path.rsplit("/", 1)[-1]
+    if room in PUBLIC_SHARE_BY_ROOM:
+        return PUBLIC_SHARE_BY_ROOM[room].expected_amount
     mapping = ROOM_MAPPINGS[room]
     basis = PeriodicRoomBasis(
         building_area=Decimal(params.get("BUILDING_AREA", "300.12")),
@@ -65,11 +72,12 @@ def _expected_amount(scenario) -> Decimal:
 
 @pytest.mark.parametrize("case_id", PERIODIC_BILL_CASE_IDS)
 def test_create_periodic_bill_and_cleanup(
-    page: Page,
+    fresh_login_page: Page,
     record_property: pytest.RecordProperty,
     account_role: str,
     case_id: str,
 ) -> None:
+    page = fresh_login_page
     reference = load_case_reference(case_id)
     source = load_excel_test_data(
         settings.test_environment,

@@ -36,11 +36,12 @@ def _parameters(text: str) -> dict[str, str]:
 
 @pytest.mark.parametrize("case_id", METER_CASE_IDS)
 def test_create_meter_bill_and_assert_amount(
-    page: Page,
+    fresh_login_page: Page,
     record_property: pytest.RecordProperty,
     account_role: str,
     case_id: str,
 ) -> None:
+    page = fresh_login_page
     reference = load_case_reference(case_id)
     excel_data = load_excel_test_data(
         settings.test_environment,

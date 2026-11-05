@@ -17,7 +17,7 @@ def test_case_reference_resolves_scenario_and_account_role() -> None:
 
 
 def test_calculation_case_reuses_the_periodic_scenario() -> None:
-    reference = load_case_reference("YSF-CALC-001", DEFAULT_WORKBOOK)
+    reference = load_case_reference("YSF-CALC-PERIODIC-1001", DEFAULT_WORKBOOK)
 
     assert reference.scenario_id == "YSF-SCENE-PERIODIC-CALC-001"
     assert reference.account_role == "default"

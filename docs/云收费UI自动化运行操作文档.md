@@ -45,6 +45,48 @@ ALLOW_BILL_DELETION=true
 
 登录态保存到 `.auth/<环境>/<客户号>/<账号别名>/`。登录提示“账号在其他地方登录”时，按正常流程再次提交一次，随后重新请求带客户号的 `#/Home` 地址；测试脚本也会按此规则自动恢复。
 
+### 收费标准初始化
+
+新环境首次初始化时，先按房间映射表创建业务收费标准；脚本默认使用映射表中的业务名称，不添加 `AT-` 前缀：
+
+```powershell
+.\\.venv\\Scripts\\python.exe scripts\\create_charge_standards.py `
+  --environment <新环境名> --customer-id <客户号> --account default `
+  --project 云收费UI自动化 --rooms 1001 1002 1003 `
+  --fresh-login --delete-created-on-failure
+```
+
+自动化专项验证才使用 `--automation-names` 创建 `AT-` 测试收费标准；业务初始化和自动化测试数据必须分开。
+
+公摊验证房间使用以下脚本追加到房间导入模板；脚本会幂等检查房间号，参与公摊房间的收费项保持为空：
+
+```powershell
+.\\.venv\\Scripts\\python.exe scripts\\add_public_share_rooms.py
+```
+
+该脚本同时维护所有计费面积相关公摊的 19 对专用房间，并将每对房间的建筑面积/使用面积写成不同组合；
+收费面积仍需通过房间收费配置维护，不能用模板中的建筑面积或使用面积代替。
+
+周期类公摊方案属于新环境初始化基线。创建 5 个正式方案时使用以下脚本；方案名称不带
+`AT-` 前缀，脚本只创建/校验，不执行删除，后续账单出账场景可直接引用这些方案：
+
+```powershell
+.\\.venv\\Scripts\\python.exe scripts\\create_initial_public_share_schemes.py `
+  --allow-initialization --test-env standard1 --customer-id 93537 `
+  --account-role default --project 云收费UI自动化
+```
+
+初始化方案与回归专项方案严格分开：初始化方案不清理；回归专项使用 `AT-` 前缀，并由
+独立清理用例按精确名称删除。
+
+如果系统重新下载的房间模板结构发生变化，先使用同目录的原始模板恢复结构，再保留当前房间数据：
+
+```powershell
+.\\.venv\\Scripts\\python.exe scripts\\restore_room_template_from_original.py
+```
+
+恢复脚本先复制 `前置数据模版文件/房间导入模版-原始模版.xlsx` 生成工作副本，再迁移 `房间导入模版.xlsx` 中现有房间数据；工作副本的表头、列宽、单元格格式和数据验证均以原始模板为准。
+
 ## 二、本地执行
 
 ### 1. 只检查用例收集，不访问页面
@@ -208,3 +250,79 @@ HTML 报告包含用例编号、环境、场景、房间、收费项、预期金
 ```
 
 清理后再重新执行失败用例，避免通过重试重复提交同一账期账单。
+# Docker 服务器运行补充（2026-09-04）
+
+服务器 `10.10.209.20` 的运行入口为
+`/home/jht/cloud-billing-ui-automation/app/scripts/run_server_docker_regression.sh`。
+默认使用离线镜像 `cloud-billing-ui-test:1.3`，执行输出保存在
+`/home/jht/cloud-billing-ui-automation/artifacts`。
+
+Docker 不会继承宿主机的 `/etc/hosts`。标准1门户在宿主机解析为
+`10.10.203.14`，原容器却解析为公网 `218.17.23.103`，造成 Chromium
+以 `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS` 拒绝加载内网业务 iframe。
+启动脚本已固定传入 `--add-host t.jslife.net:10.10.203.14`；切换部署地址时通过
+`AUTOMATION_PORTAL_HOST` 和 `AUTOMATION_PORTAL_IP` 覆盖，不要关闭浏览器整体安全检查。
+
+启动脚本同时只读挂载 `app/.auth`，以读取按环境、客户、角色隔离的登录状态。
+`.env.standard1` 与 `.auth` 属于私密运行配置，不打入镜像或提交仓库。
+仪表用例采集需要 `前置数据模版文件/线下仪表用量导入模板.xlsx`，该文件必须随安装包提供。
+
+手动运行全部场景：
+
+```bash
+bash /home/jht/cloud-billing-ui-automation/app/scripts/run_server_docker_regression.sh
+```
+
+运行全量回归场景：
+
+```bash
+bash /home/jht/run_server_representative_chain.sh
+```
+
+仅运行 8 条代表性场景：
+
+```bash
+bash /home/jht/run_server_8_representative_chain.sh
+```
+
+该一键脚本已包含 Docker、内网域名映射、环境配置、登录状态和报告目录挂载，首次复制到服务器后执行：
+
+```bash
+chmod +x /home/jht/cloud-billing-ui-automation/app/scripts/run_server_representative_chain.sh
+```
+
+全量 HTML 报告位于 `$BASE/artifacts/server-regression-report.html`，8 条专项报告位于
+`$BASE/artifacts/representative-chain.html`。可用 `scp` 下载到本机后
+直接用浏览器打开；明细日志为 `live-results.jsonl` 和 `browser-errors.jsonl`。
+
+从服务器下载 HTML 报告到本地（在本机 PowerShell 执行）：
+
+```powershell
+scp -i C:\Users\Administrator\.ssh\codex_jenkins_20260903 `
+  jht@10.10.209.20:/home/jht/cloud-billing-ui-automation/artifacts/server-regression-report.html `
+  .\server-regression-report.html
+
+scp -i C:\Users\Administrator\.ssh\codex_jenkins_20260903 `
+  jht@10.10.209.20:/home/jht/cloud-billing-ui-automation/artifacts/representative-chain.html `
+  .\representative-chain.html
+```
+
+下载完成后，双击本地 HTML 文件即可用浏览器查看。
+
+可在命令后重复传入 `--test-target '完整pytest节点ID'` 选择多个场景。
+多个目标在同一 pytest 会话中按账单中心、计费出账、临时台账排序；保留逐条清理、
+模块间清理和最终检查。`scripts/run_representative_chain.py` 固定选取八个代表场景，
+先预检节点再实际执行，临时台账节点只选一条参数化用例。
+
+本次排障已用相同容器对照确认：补映射前业务 iframe 被拦截，补映射后业务 iframe
+能加载。这一结果只证明页面访问修复；出账、金额与清理结果以实际回归报告为准。
+
+每条用例的即时结果写入 `artifacts/live-results.jsonl`，浏览器异常及创建接口反馈
+写入 `artifacts/browser-errors.jsonl`。两者追加记录，排查时以本轮新增记录为准。
+收费项选择等待左侧真实树节点后才输入名称；最晚缴款日按 Excel“执行当天”动态取值，
+账期仍固定 `2026-08`。
+
+2026-09-04 剩余阻塞：房间 1002 创建接口提示 2026-08 计费期间与已生成明细交叉，
+而 `queryBillByPage` 在项目 `p202603190`、全年账期、无状态限制条件下成功返回
+`total=0`。这组响应不能作为“创建并清理通过”的证据；需要后端核对明细与账单的关联，
+不得自动删除无法在授权业务列表中确认的记录。

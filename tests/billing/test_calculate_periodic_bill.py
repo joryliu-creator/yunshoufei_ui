@@ -101,9 +101,13 @@ def test_calculate_periodic_bill_then_approve_and_cleanup(
         rule_drawer = calculation.open_rule_details(condition_drawer)
         calculation.configure_rule_dates(rule_drawer, data)
         calculation.start_calculation(rule_drawer)
-        calculation.assert_pending_amount(data.billing_month, format(expected_amount, "f"))
+        calculation.assert_pending_amount(
+            data.billing_month,
+            format(expected_amount, "f"),
+            charge_item=data.charge_item,
+        )
         submission_started = True
-        calculation.reconcile_and_approve(data)
+        calculation.reconcile_and_approve(data, format(expected_amount, "f"))
 
         # 审核通过后直接进入账单中心，按账期 + 房间筛选本次唯一账单。
         portal.open_billing_center()
@@ -138,11 +142,7 @@ def test_calculate_periodic_bill_then_approve_and_cleanup(
         )
     finally:
         # 失败时清理计费出账页待处理卡片；账单中心已出账账单由编号清理。
-        if (
-            sys.exc_info()[0] is not None
-            and settings.allow_bill_deletion
-            and settings.test_environment != "prod"
-        ):
+        if settings.allow_bill_deletion and settings.test_environment != "prod":
             try:
                 record_property(
                     "pending_cleanup",

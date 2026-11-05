@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class PortalPage:
     def __init__(self, page: Page) -> None:
         self.page = page
+        self._home_context: tuple[str, str, str | None, str | None] | None = None
 
     @staticmethod
     def _customer_home_url(base_url: str, master_customer_id: str) -> str:
@@ -104,6 +105,22 @@ class PortalPage:
         account_role: str | None = None,
     ) -> None:
         """Open a customer portal and recover an expired local login state."""
+        if "#/Home" in self.page.url and self._cloud_billing_entry().is_visible():
+            self._home_context = (
+                base_url,
+                master_customer_id,
+                environment,
+                account_role,
+            )
+            self.dismiss_home_overlays()
+            self.collapse_customer_service()
+            return
+        self._home_context = (
+            base_url,
+            master_customer_id,
+            environment,
+            account_role,
+        )
         # 标准1门户在自动登录后携带 mcid 重新请求会回跳到登录页。
         # 目标客户由 Home 路由参数维持，使用已人工验证的稳定入口。
         home_url = self._customer_home_url(base_url, master_customer_id)
@@ -159,8 +176,28 @@ class PortalPage:
             raise AssertionError("未找到当前环境和账号的本地登录凭据。")
         username, password, captcha = credentials
         self.page.context.clear_cookies()
-        self.page.evaluate("() => { sessionStorage.clear(); localStorage.clear(); }")
+        self.page.evaluate(
+            """() => {
+                const markerKey = '__codex_saved_session_storage_restored_v1__';
+                const marker = sessionStorage.getItem(markerKey);
+                sessionStorage.clear();
+                if (marker === '1') sessionStorage.setItem(markerKey, marker);
+                localStorage.clear();
+            }"""
+        )
         self.page.goto(f"{base_url}#/login", wait_until="commit")
+        # A restored context may inject an expired downstream token into the
+        # new login document. Clear it on the actual portal origin before
+        # submitting the fresh login form.
+        self.page.evaluate(
+            """() => {
+                const markerKey = '__codex_saved_session_storage_restored_v1__';
+                const marker = sessionStorage.getItem(markerKey);
+                sessionStorage.clear();
+                if (marker === '1') sessionStorage.setItem(markerKey, marker);
+                localStorage.clear();
+            }"""
+        )
         if self._wait_for_login_or_portal() != "login":
             raise AssertionError("门户未显示登录表单。")
         self._submit_login(username, password, captcha)
@@ -318,6 +355,27 @@ class PortalPage:
             self.page.wait_for_timeout(300)
 
     def open_billing_center(self) -> None:
+        self._open_billing_center_once()
+        if self._wait_for_billing_center_ready(timeout=15_000):
+            return
+
+        # The outer portal can still look authenticated while its downstream
+        # cloud-billing token has expired. Recover the login once, then reopen
+        # the same established Bill Center page; never rewrite bill creation.
+        if self._home_context is None:
+            raise AssertionError("账单中心 iframe 未加载，且缺少登录恢复上下文。")
+        base_url, customer_id, environment, account_role = self._home_context
+        home_url = self._customer_home_url(base_url, customer_id)
+        self._login_with_local_credentials(
+            base_url, customer_id, home_url, environment, account_role
+        )
+        self.dismiss_home_overlays()
+        self.collapse_customer_service()
+        self._open_billing_center_once()
+        if not self._wait_for_billing_center_ready(timeout=30_000):
+            raise AssertionError("重新登录后账单中心 iframe 仍未加载业务页面。")
+
+    def _open_billing_center_once(self) -> None:
         self.dismiss_home_overlays()
         self.collapse_customer_service()
         cloud_billing = self._cloud_billing_entry()
@@ -329,6 +387,45 @@ class PortalPage:
         )
         expect(billing_center).to_be_visible(timeout=15_000)
         billing_center.click()
+        # 已打开过减免管理等业务页时，门户可能只更新菜单而保留旧的
+        # iframe；显式点击账单中心页签，确保后续清理使用活动业务页。
+        self._activate_business_tab(r"账单中心")
+
+    def _activate_business_tab(self, tab_pattern: str) -> None:
+        """Wait for and activate a portal business tab after menu navigation."""
+        tab = self.page.get_by_role("tab", name=re.compile(tab_pattern))
+        for _ in range(30):
+            visible_tabs = [
+                tab.nth(index)
+                for index in range(tab.count())
+                if tab.nth(index).is_visible()
+            ]
+            if visible_tabs:
+                target = visible_tabs[-1]
+                target.click(force=True)
+                self.page.wait_for_timeout(300)
+                return
+            self.page.wait_for_timeout(500)
+        raise AssertionError(
+            f"门户导航后未找到可见业务页签：{tab_pattern}；"
+            f"当前页签文本={self.page.get_by_role('tab').all_inner_texts()}"
+        )
+
+    def _wait_for_billing_center_ready(self, timeout: int) -> bool:
+        attempts = max(1, timeout // 500)
+        for _ in range(attempts):
+            for frame in self.page.frames:
+                if frame == self.page.main_frame:
+                    continue
+                try:
+                    if frame.get_by_role(
+                        "button", name="创建账单", exact=True
+                    ).is_visible():
+                        return True
+                except Exception:
+                    pass
+            self.page.wait_for_timeout(500)
+        return False
 
     def open_temporary_ledger(self) -> None:
         """Open the cloud-billing temporary-ledger page.
@@ -347,6 +444,7 @@ class PortalPage:
         )
         expect(temporary_ledger).to_be_visible(timeout=15_000)
         temporary_ledger.click()
+        self._activate_business_tab(r"临时台账")
 
     def open_billing_calculation(self) -> None:
         """Open the calculation-billing module.
@@ -356,16 +454,137 @@ class PortalPage:
         resulting bill can be viewed in the bill center.
         """
         self.dismiss_home_overlays()
-        self.collapse_customer_service()
-        cloud_billing = self._cloud_billing_entry()
-        if cloud_billing.is_visible():
-            cloud_billing.click()
 
-        calculation_billing = self.page.get_by_role(
-            "menuitem", name="计费出账", exact=True
-        )
-        expect(calculation_billing).to_be_visible(timeout=15_000)
-        calculation_billing.click()
+        def activate_calculation_tab() -> None:
+            self.collapse_customer_service()
+            cloud_billing = self._cloud_billing_entry()
+            if cloud_billing.is_visible():
+                cloud_billing.click()
+            calculation_billing = self.page.get_by_role(
+                "menuitem", name="计费出账", exact=True
+            )
+            expect(calculation_billing).to_be_visible(timeout=15_000)
+            calculation_billing.click()
+            # Reuse the existing tab when the serial billing flow previously
+            # visited Bill Center. Clicking the menu item alone can leave the
+            # calculation iframe hidden behind the active Bill Center tab.
+            self._activate_business_tab(r"计费出账")
+
+        # First activate the tab, then inspect it.  A previous calculation
+        # detail can be hidden behind another business tab and is invisible to
+        # Playwright until the calculation tab becomes active.
+        activate_calculation_tab()
+        self._close_calculation_detail_if_open()
+        if self._calculation_detail_is_visible() or self._calculation_ui_needs_reset():
+            # The detail view is a full business-page route in this build, so
+            # its close icon is not always exposed to the iframe locator.
+            # A rejected calculation can also leave an extra visible
+            # ``开始计算`` control mounted in the iframe. Reload the
+            # authenticated portal shell once to clear either stale state;
+            # this preserves the login session and avoids a second login.
+            if self._home_context is not None:
+                base_url, customer_id, _, _ = self._home_context
+                self.page.goto(
+                    self._customer_home_url(base_url, customer_id),
+                    wait_until="domcontentloaded",
+                )
+                self.page.wait_for_timeout(2_000)
+                activate_calculation_tab()
+                self._close_calculation_detail_if_open()
+        if self._calculation_detail_is_visible():
+            raise AssertionError("计费出账页仍停留在上一条费用计算详情，禁止继续执行。")
+        if self._calculation_ui_needs_reset():
+            self._save_calculation_state("calculation-stale-state")
+            raise AssertionError(
+                "计费出账页重载后仍存在异常的开始计算控件，禁止继续执行。"
+            )
+
+    def _close_calculation_detail_if_open(self) -> None:
+        """Close a previous calculation detail view before the next case."""
+        for _ in range(20):
+            for frame in list(self.page.frames):
+                try:
+                    marker = frame.get_by_text("费用计算详情", exact=True)
+                    visible_markers = [
+                        marker.nth(index)
+                        for index in range(marker.count())
+                        if marker.nth(index).is_visible()
+                    ]
+                    if not visible_markers:
+                        continue
+                    close = frame.locator(
+                        ".el-icon-close:visible, "
+                        ".icon-close:visible, "
+                        "[class*='close']:visible, "
+                        "[class*='Close']:visible, "
+                        "button[aria-label*='关闭']:visible, "
+                        "[role='button'][aria-label*='关闭']:visible"
+                    )
+                    if close.count():
+                        close.last.evaluate("el => el.click()")
+                    else:
+                        self.page.keyboard.press("Escape")
+                    expect(marker.first).to_be_hidden(timeout=2_000)
+                    return
+                except Exception:
+                    # Keep navigation available if a transient frame detaches
+                    # during the close animation; retry while the prior page
+                    # is still mounting instead of moving to a stale frame.
+                    continue
+            self.page.wait_for_timeout(500)
+
+    def _calculation_detail_is_visible(self) -> bool:
+        for frame in list(self.page.frames):
+            try:
+                marker = frame.get_by_text("费用计算详情", exact=True)
+                if any(
+                    marker.nth(index).is_visible()
+                    for index in range(marker.count())
+                ):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _calculation_ui_needs_reset(self) -> bool:
+        """Detect a stale calculation drawer left by a rejected run.
+
+        The normal page has exactly two visible ``开始计算`` actions (regular
+        and temporary).  A failed backend request can leave the footer action
+        from the old drawer mounted as a third visible action.  Treat that as
+        session pollution and reload the authenticated shell before the next
+        parameterized case.
+        """
+        for frame in list(self.page.frames):
+            try:
+                if "billChargeout" not in frame.url:
+                    continue
+                starts = frame.get_by_text("开始计算", exact=True)
+                count = sum(
+                    1
+                    for index in range(starts.count())
+                    if starts.nth(index).is_visible()
+                )
+                if count > 2:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _save_calculation_state(self, stem: str) -> None:
+        """Persist compact diagnostics without dumping the full page log."""
+        try:
+            Path("artifacts").mkdir(exist_ok=True)
+            for frame in list(self.page.frames):
+                if "billChargeout" not in frame.url:
+                    continue
+                Path(f"artifacts/{stem}.txt").write_text(
+                    frame.locator("body").inner_text(), encoding="utf-8"
+                )
+                break
+            self.page.screenshot(path=f"artifacts/{stem}.png", full_page=True)
+        except Exception:
+            pass
 
     def collapse_customer_service(self) -> None:
         open_panel = self.page.locator(".bar-container .f-container.open")
@@ -395,9 +614,23 @@ class PortalPage:
             try:
                 collapse_button.click(timeout=2_000)
             except PlaywrightTimeoutError:
-                open_panel.first.evaluate("el => el.classList.remove('open')")
+                self.page.evaluate(
+                    """() => {
+                        const panel = document.querySelector(
+                            '.bar-container .f-container.open'
+                        );
+                        if (panel) panel.classList.remove('open');
+                    }"""
+                )
         try:
             expect(open_panel).to_be_hidden(timeout=1_000)
         except AssertionError:
-            open_panel.first.evaluate("el => el.classList.remove('open')")
+            self.page.evaluate(
+                """() => {
+                    const panel = document.querySelector(
+                        '.bar-container .f-container.open'
+                    );
+                    if (panel) panel.classList.remove('open');
+                }"""
+            )
             expect(open_panel).to_be_hidden(timeout=5_000)

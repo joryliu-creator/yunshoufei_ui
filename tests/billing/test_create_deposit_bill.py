@@ -28,7 +28,7 @@ class DepositCase:
 
 DEPOSIT_CASES = (
     DepositCase(
-        "YSF-BILL-DEPOSIT-001",
+        "YSF-BILL-DEPOSIT-1021",
         "1021",
         "押金类-人工输入收费金额",
         Decimal("2000.00"),

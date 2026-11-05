@@ -28,7 +28,12 @@ def main() -> None:
         case_id = ws.cell(row, 1).value
         if not isinstance(case_id, str):
             continue
-        if case_id == "YSF-BILL-001" or case_id.startswith("YSF-BILL-METER-") or case_id.startswith("YSF-BILL-PERIODIC-"):
+        if (
+            case_id == "YSF-BILL-001"
+            or case_id.startswith("YSF-BILL-METER-")
+            or case_id.startswith("YSF-BILL-PERIODIC-")
+            or case_id.startswith("YSF-BILL-PUBLIC-SHARE-PERIODIC-")
+        ):
             ws.cell(row, 10).value = STEPS
             ws.cell(row, 12).value = EXPECTED
             updated.append(case_id)

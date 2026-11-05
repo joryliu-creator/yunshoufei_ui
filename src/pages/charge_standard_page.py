@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+import time
 
 from playwright.sync_api import FrameLocator, Locator, Page, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -46,10 +48,23 @@ class ChargeStandardPage(BasePage):
         )
 
     def open(self, expected_customer_id: str | None = None) -> None:
-        self.page.get_by_role("menuitem", name="云收费", exact=True).click()
-        charge_settings = self.page.get_by_role(
-            "menuitem", name="收费设置", exact=False
+        existing_button = self.frame.get_by_role(
+            "button", name="鏂板鏀惰垂鏍囧噯", exact=True
         )
+        if existing_button.count() == 1 and existing_button.is_visible():
+            if expected_customer_id:
+                iframe_src = self.page.locator(
+                    'iframe[src*="chargeStandard"]'
+                ).get_attribute("src") or ""
+                if f"customerId={expected_customer_id}" not in iframe_src:
+                    raise AssertionError(
+                        f"charge standard iframe customer context mismatch: {iframe_src}"
+                    )
+            return
+        self.page.get_by_role("menuitem", name="云收费", exact=True).click()
+        charge_settings = self.page.locator(
+            'li.el-submenu[role="menuitem"]'
+        ).filter(has_text="收费设置")
         expect(charge_settings).to_be_visible(timeout=30_000)
         if charge_settings.get_attribute("aria-expanded") != "true":
             charge_settings.click()
@@ -75,9 +90,9 @@ class ChargeStandardPage(BasePage):
                 if close_tab.count() == 1:
                     close_tab.click()
                     self.page.wait_for_timeout(500)
-            charge_settings = self.page.get_by_role(
-                "menuitem", name="收费设置", exact=False
-            )
+            charge_settings = self.page.locator(
+                'li.el-submenu[role="menuitem"]'
+            ).filter(has_text="收费设置")
             expect(charge_settings).to_be_visible(timeout=30_000)
             if charge_settings.get_attribute("aria-expanded") != "true":
                 charge_settings.click()
@@ -118,17 +133,25 @@ class ChargeStandardPage(BasePage):
             self.page.wait_for_timeout(300)
 
     def exists(self, name: str) -> bool:
+        self.cancel_open_create_dialog()
         search = self.require_single(
-            self.frame.get_by_placeholder("请输入收费标准名称", exact=True),
+            self.frame.locator(
+                'input[placeholder="请输入收费标准名称"]:visible'
+            ),
             "收费标准名称查询框",
         )
         search_button = self.frame.locator("button").filter(
             has_text="搜索", has_not_text="高级搜索"
         )
         search_button = self.require_single(search_button, "普通搜索按钮")
-        for _ in range(3):
+        for _ in range(2):
+            self._wait_for_no_messages(timeout=15_000)
             search.fill(name)
-            search_button.click()
+            try:
+                search_button.click(timeout=5_000)
+            except PlaywrightTimeoutError:
+                self._wait_for_no_messages(timeout=15_000)
+                search_button.click(timeout=10_000)
             self.page.wait_for_timeout(3_000)
             expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
                 0, timeout=60_000
@@ -137,8 +160,16 @@ class ChargeStandardPage(BasePage):
             for index in range(exact_cell.count()):
                 if exact_cell.nth(index).inner_text().strip() == name:
                     return True
-            self.page.wait_for_timeout(2_000)
+            self.page.wait_for_timeout(1_000)
         return False
+
+    def _wait_for_no_messages(self, *, timeout: int) -> None:
+        """Avoid a transient Element UI toast intercepting the search button."""
+        messages = self.frame.locator(".el-message:visible, .el-notification:visible")
+        try:
+            expect(messages).to_have_count(0, timeout=min(timeout, 3_000))
+        except (AssertionError, PlaywrightTimeoutError):
+            self.page.keyboard.press("Escape")
 
     def create(self, data: ChargeStandardData) -> None:
         self.frame.get_by_role(
@@ -156,7 +187,14 @@ class ChargeStandardPage(BasePage):
         if data.charge_type == "抽成类":
             self._select_project(dialog, data.project_name)
             self.page.wait_for_timeout(5_000)
-            self._select_charge_item(charge_item, data.charge_item)
+            try:
+                self._select_charge_item(charge_item, data.charge_item)
+            except AssertionError:
+                # 抽成类收费项由适用项目接口异步刷新；重选项目可触发
+                # 一次新的请求，避免沿用空的旧下拉结果。
+                self._select_project(dialog, data.project_name)
+                self.page.wait_for_timeout(5_000)
+                self._select_charge_item(charge_item, data.charge_item)
         else:
             self.page.wait_for_timeout(3_000)
             self._select_charge_item(charge_item, data.charge_item)
@@ -292,6 +330,7 @@ class ChargeStandardPage(BasePage):
 
     def delete_exact(self, name: str) -> None:
         """只删除精确名称且查询结果唯一的收费标准。"""
+        self.cancel_open_create_dialog()
         if not self.exists(name):
             return
         row = self.frame.locator("tr").filter(has_text=name)
@@ -308,34 +347,101 @@ class ChargeStandardPage(BasePage):
             raise AssertionError(
                 f"收费标准 {name!r} 应唯一匹配一行，实际 {len(exact_rows)} 行。"
             )
-        delete_button = exact_rows[0].get_by_role(
+        data_row = exact_rows[0]
+        status_switch = data_row.locator(".el-switch:visible")
+        status_switch = self.require_single(
+            status_switch, "收费标准启用状态开关"
+        )
+        if "is-checked" in (status_switch.get_attribute("class") or ""):
+            status_switch.click()
+            expect(status_switch).not_to_have_class(
+                re.compile(r".*\bis-checked\b.*"), timeout=30_000
+            )
+            expect(data_row).to_contain_text(
+                re.compile(r"未启用|停用"), timeout=30_000
+            )
+            expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
+                0, timeout=60_000
+            )
+        row_index = data_row.evaluate(
+            "row => Array.from(row.parentElement.children).indexOf(row)"
+        )
+        fixed_rows = self.frame.locator(
+            ".el-table__fixed-right .el-table__fixed-body-wrapper "
+            "tr.el-table__row:visible"
+        )
+        operation_row = (
+            fixed_rows.nth(row_index)
+            if fixed_rows.count() > row_index
+            else data_row
+        )
+        delete_button = operation_row.get_by_role(
             "button", name="删除", exact=True
         )
+        if delete_button.count() == 0:
+            delete_button = operation_row.get_by_text("删除", exact=True)
         expect(delete_button).to_have_count(1)
         delete_button.click()
-        confirm = self.frame.get_by_role("button", name="确 定", exact=True)
-        expect(confirm).to_be_visible(timeout=15_000)
+        prompt_pattern = re.compile(r"是否确认删除|确认.*删除|删除后.*不可恢复")
+        prompt = self.frame.get_by_text(prompt_pattern)
+        try:
+            expect(prompt).to_be_visible(timeout=15_000)
+        except (AssertionError, PlaywrightTimeoutError):
+            prompt = self.page.get_by_text(prompt_pattern)
+            expect(prompt).to_be_visible(timeout=15_000)
+        panel = prompt.locator("xpath=ancestor::*[.//button][1]")
+        confirm = panel.get_by_role("button", name=re.compile(r"^确\s*定$"))
+        confirm = self.require_single(confirm, "收费标准删除确认按钮")
         confirm.click()
-        expect(self.frame.get_by_text("删除成功", exact=True)).to_be_visible(
-            timeout=15_000
+        expect(panel).to_be_hidden(timeout=15_000)
+        expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
+            0, timeout=60_000
         )
+        self.page.wait_for_timeout(3_000)
+        if self.exists(name):
+            frame_messages = self.frame.locator(
+                ".el-message:visible, .el-notification:visible, "
+                ".el-message-box:visible"
+            ).all_inner_texts()
+            page_messages = self.page.locator(
+                ".el-message:visible, .el-notification:visible, "
+                ".el-message-box:visible"
+            ).all_inner_texts()
+            raise AssertionError(
+                f"收费标准删除后仍可查询：{name}；"
+                f"iframe提示={frame_messages}；门户提示={page_messages}"
+            )
 
-    def _select(self, input_locator: Locator, option: str) -> None:
+    def _select(
+        self, input_locator: Locator, option: str, *, max_wait_ms: int = 30_000
+    ) -> None:
         input_locator = self.require_single(input_locator, f"{option}选择框")
-        dropdown = self.frame.locator(".el-select-dropdown:visible")
         options: list[str] = []
         input_locator.click()
-        expect(dropdown).to_have_count(1, timeout=15_000)
-        for _ in range(90):
-            target = dropdown.get_by_text(option, exact=True)
-            options = dropdown.locator("li:visible").all_inner_texts()
-            if target.count() == 1:
-                target.click()
-                expect(input_locator).to_have_value(option, timeout=15_000)
-                return
-            if options:
-                break
-            self.page.wait_for_timeout(2_000)
+        deadline = time.monotonic() + max_wait_ms / 1000
+        while time.monotonic() < deadline:
+            dropdowns = self.frame.locator(".el-select-dropdown:visible")
+            matching_dropdowns: list[Locator] = []
+            observed: list[str] = []
+            for index in range(dropdowns.count()):
+                dropdown = dropdowns.nth(index)
+                observed.extend(dropdown.locator("li:visible").all_inner_texts())
+                if dropdown.get_by_text(option, exact=True).count() == 1:
+                    matching_dropdowns.append(dropdown)
+            options = observed
+            if matching_dropdowns:
+                target = matching_dropdowns[-1].get_by_text(option, exact=True)
+                try:
+                    target.scroll_into_view_if_needed(timeout=2_000)
+                    target.click(timeout=5_000)
+                    expect(input_locator).to_have_value(option, timeout=5_000)
+                    return
+                except (AssertionError, PlaywrightTimeoutError):
+                    self.page.keyboard.press("Escape")
+                    input_locator.click()
+                    self.page.wait_for_timeout(500)
+                    continue
+            self.page.wait_for_timeout(500)
         self.page.keyboard.press("Escape")
         raise AssertionError(
             f"下拉框未找到选项 {option!r}；最后可见选项：{options}"
@@ -347,9 +453,9 @@ class ChargeStandardPage(BasePage):
         """收费项接口会异步刷新选择值，空值时有限重选。"""
         last_error: Exception | None = None
         for _ in range(3):
-            self.page.wait_for_timeout(2_000)
+            self.page.wait_for_timeout(1_500)
             try:
-                self._select(input_locator, option)
+                self._select(input_locator, option, max_wait_ms=30_000)
                 return
             except (AssertionError, PlaywrightTimeoutError) as exc:
                 last_error = exc
@@ -358,7 +464,7 @@ class ChargeStandardPage(BasePage):
             )
             if visible_dropdown.count():
                 self.page.keyboard.press("Escape")
-            self.page.wait_for_timeout(2_000)
+            self.page.wait_for_timeout(1_500)
         raise AssertionError(
             f"收费项 {option!r} 选择后被异步刷新为空，重试仍未稳定。"
         ) from last_error
@@ -420,6 +526,7 @@ class ChargeStandardPage(BasePage):
         expect(target).to_have_count(1, timeout=15_000)
         target.click()
         self.page.keyboard.press("Escape")
+        expect(popper).to_have_count(0, timeout=15_000)
         expect(dialog.get_by_text(project_name, exact=True)).to_be_visible(
             timeout=15_000
         )
@@ -467,8 +574,8 @@ class ChargeStandardPage(BasePage):
         values = dialog.locator(
             f'input[type="number"][placeholder="{value_placeholder}"]:visible'
         )
-        expect(boundaries).to_have_count(2, timeout=15_000)
-        expect(values).to_have_count(2, timeout=15_000)
+        expect(boundaries).to_have_count(2, timeout=30_000)
+        expect(values).to_have_count(2, timeout=30_000)
         low_upper, low_value, high_lower, high_value = (
             tiers[0][1], tiers[0][2], tiers[1][0], tiers[1][2]
         )
@@ -498,15 +605,16 @@ class ChargeStandardPage(BasePage):
         expect(add_tier).to_have_count(1)
         for _ in tiers:
             add_tier.click()
+            self.page.wait_for_timeout(500)
 
         minimums = dialog.locator('input[placeholder="最小值"]:visible')
         maximums = dialog.locator('input[placeholder="最大值"]:visible')
         prices = dialog.locator(
             'input[placeholder="请输入对应月单价"]:visible'
         )
-        expect(minimums).to_have_count(len(tiers), timeout=15_000)
-        expect(maximums).to_have_count(len(tiers), timeout=15_000)
-        expect(prices).to_have_count(len(tiers), timeout=15_000)
+        expect(minimums).to_have_count(len(tiers), timeout=30_000)
+        expect(maximums).to_have_count(len(tiers), timeout=30_000)
+        expect(prices).to_have_count(len(tiers), timeout=30_000)
         for index, (minimum, maximum, price) in enumerate(tiers):
             minimums.nth(index).fill(minimum)
             maximums.nth(index).fill(maximum)
@@ -526,13 +634,13 @@ class ChargeStandardPage(BasePage):
         body = dialog.locator(".el-table__body-wrapper").filter(
             has_text="不大于"
         )
-        expect(body).to_have_count(1, timeout=15_000)
+        expect(body).to_have_count(1, timeout=30_000)
         boundaries = body.locator('input[type="number"][placeholder=""]')
         amounts = body.locator(
             'input[type="number"][placeholder="请输入单价"]'
         )
-        expect(boundaries).to_have_count(2, timeout=15_000)
-        expect(amounts).to_have_count(2, timeout=15_000)
+        expect(boundaries).to_have_count(2, timeout=30_000)
+        expect(amounts).to_have_count(2, timeout=30_000)
         low_upper, low_amount, high_lower, high_amount = (
             tiers[0][1], tiers[0][2], tiers[1][0], tiers[1][2]
         )
@@ -557,15 +665,16 @@ class ChargeStandardPage(BasePage):
         expect(add_tier).to_have_count(1)
         for _ in tiers:
             add_tier.click()
+            self.page.wait_for_timeout(500)
 
         minimums = dialog.locator('input[placeholder="最小值"]:visible')
         maximums = dialog.locator('input[placeholder="最大值"]:visible')
         amounts = dialog.locator(
             'input[placeholder="请输入对应月单价"]:visible'
         )
-        expect(minimums).to_have_count(len(tiers), timeout=15_000)
-        expect(maximums).to_have_count(len(tiers), timeout=15_000)
-        expect(amounts).to_have_count(len(tiers), timeout=15_000)
+        expect(minimums).to_have_count(len(tiers), timeout=30_000)
+        expect(maximums).to_have_count(len(tiers), timeout=30_000)
+        expect(amounts).to_have_count(len(tiers), timeout=30_000)
         for index, (minimum, maximum, amount) in enumerate(tiers):
             minimums.nth(index).fill(minimum)
             maximums.nth(index).fill(maximum)
@@ -584,15 +693,15 @@ class ChargeStandardPage(BasePage):
         body = dialog.locator(".el-table__body-wrapper").filter(
             has_text="低于/等于"
         )
-        expect(body).to_have_count(1, timeout=15_000)
+        expect(body).to_have_count(1, timeout=30_000)
         boundaries = body.locator(
             'input[type="number"][placeholder=""]:visible'
         )
         values = body.locator(
             f'input[placeholder="{value_placeholder}"]:visible'
         )
-        expect(boundaries).to_have_count(2 * (len(tiers) - 1), timeout=15_000)
-        expect(values).to_have_count(len(tiers), timeout=15_000)
+        expect(boundaries).to_have_count(2 * (len(tiers) - 1), timeout=30_000)
+        expect(values).to_have_count(len(tiers), timeout=30_000)
 
         boundary_values: list[str] = []
         for index, (minimum, maximum, value) in enumerate(tiers):

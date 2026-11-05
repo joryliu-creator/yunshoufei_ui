@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import date, timedelta
 from decimal import Decimal
@@ -18,7 +19,7 @@ from src.pages.temporary_ledger_page import TemporaryBillData, TemporaryLedgerPa
 
 TEMPORARY_CASE_IDS = [case[0] for case in TEMPORARY_CASES]
 ROOT = Path(__file__).resolve().parents[2]
-CREATED_BILL_ARTIFACT = ROOT / "artifacts" / "temporary-created-bill.json"
+CREATED_BILL_ARTIFACT = Path(os.getenv("PLATFORM_RUN_ARTIFACTS_DIR", str(ROOT / "artifacts"))) / "temporary-created-bill.json"
 
 pytestmark = [
     pytest.mark.side_effect,
@@ -31,11 +32,12 @@ pytestmark = [
 
 @pytest.mark.parametrize("case_id", TEMPORARY_CASE_IDS)
 def test_create_temporary_bill_assert_amount_and_cleanup(
-    page: Page,
+    fresh_login_page: Page,
     record_property: pytest.RecordProperty,
     account_role: str,
     case_id: str,
 ) -> None:
+    page = fresh_login_page
     reference = load_case_reference(case_id)
     excel_data = load_excel_test_data(
         settings.test_environment,
@@ -128,6 +130,38 @@ def test_create_temporary_bill_assert_amount_and_cleanup(
             CREATED_BILL_ARTIFACT.write_text(
                 json.dumps(artifact, ensure_ascii=False, indent=2),
                 encoding="utf-8",
+            )
+        elif (
+            temporary.last_submission_confirmed
+            and not existing_bill_numbers
+            and settings.cleanup_created_bill
+        ):
+            # A successful submit can still fail later while the page captures
+            # the refreshed row. In that case, clean only this target that was
+            # empty before the submit, using month + room + charge item.
+            if not settings.allow_bill_deletion:
+                pytest.fail(
+                    "临时账单已提交但未捕获编号，且禁止按业务键清理；"
+                    "请先核对该房间账期和收费项。"
+                )
+            cleaned = temporary.cleanup_by_month_room_charge_item(
+                billing_month=data.billing_month,
+                room_path=data.room_path,
+                charge_item=data.charge_item,
+                void_reason=settings.void_reason,
+                require_match=False,
+            )
+            record_property(
+                "cleanup_without_captured_bill_number",
+                json.dumps(
+                    {
+                        "billing_month": data.billing_month,
+                        "room_path": data.room_path,
+                        "charge_item": data.charge_item,
+                        "cleaned_count": len(cleaned),
+                    },
+                    ensure_ascii=False,
+                ),
             )
 
 
