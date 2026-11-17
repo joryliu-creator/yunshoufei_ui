@@ -17,36 +17,20 @@ from scripts.create_charge_standards import restore_session  # noqa: E402
 
 
 def main() -> None:
-    if len(sys.argv) not in {2, 4, 6, 8}:
+    if len(sys.argv) != 7:
         raise SystemExit(
-            "用法：python scripts/cleanup_bill.py <账单编号|--only-result> "
-            "[--room <房间路径>] [--billing-month <YYYY-MM>]"
+            "用法：python scripts/cleanup_bill.py --billing-month <YYYY-MM> "
+            "--room <房间路径> --charge-item <收费项>"
         )
     if not settings.allow_bill_deletion:
         raise SystemExit("ALLOW_BILL_DELETION 未开启，禁止删除账单。")
-
-    bill_number_argument = sys.argv[1].strip()
-    room_path_override = None
-    billing_month_override = None
-    charge_item_override = None
-    if len(sys.argv) == 4:
-        if sys.argv[2] == "--room":
-            room_path_override = sys.argv[3].strip()
-        elif sys.argv[2] == "--billing-month":
-            billing_month_override = sys.argv[3].strip()
-        else:
-            raise SystemExit("参数必须是 --room 或 --billing-month")
-    if len(sys.argv) == 6:
-        if sys.argv[2] != "--room" or sys.argv[4] != "--billing-month":
-            raise SystemExit("参数顺序应为 --room <房间路径> --billing-month <YYYY-MM>")
-        room_path_override = sys.argv[3].strip()
-        billing_month_override = sys.argv[5].strip()
-    if len(sys.argv) == 8:
-        if sys.argv[2] != "--room" or sys.argv[4] != "--billing-month" or sys.argv[6] != "--charge-item":
-            raise SystemExit("参数顺序应为 --room <房间路径> --billing-month <YYYY-MM> --charge-item <收费项>")
-        room_path_override = sys.argv[3].strip()
-        billing_month_override = sys.argv[5].strip()
-        charge_item_override = sys.argv[7].strip()
+    if sys.argv[1] != "--billing-month" or sys.argv[3] != "--room" or sys.argv[5] != "--charge-item":
+        raise SystemExit(
+            "参数顺序应为 --billing-month <YYYY-MM> --room <房间路径> --charge-item <收费项>"
+        )
+    billing_month = sys.argv[2].strip()
+    room_path = sys.argv[4].strip()
+    charge_item = sys.argv[6].strip()
     role = "default"
     profile = get_account_auth_profile(
         ROOT,
@@ -84,32 +68,34 @@ def main() -> None:
             portal.open_billing_center()
             billing_center.wait_until_table_readable()
         billing_center.select_project(settings.project_name)
-        billing_month = billing_month_override or settings.billing_month
-        room_path = room_path_override or settings.room_path
-        if bill_number_argument == "--only-result":
-            if charge_item_override:
-                numbers = billing_center.get_bill_numbers_by_month_room_charge_item(
-                    billing_month=billing_month,
-                    room_path=room_path,
-                    charge_item=charge_item_override,
-                )
-                for number in reversed(numbers):
-                    billing_center.cleanup_bill(number, settings.void_reason, billing_month)
-                bill_number = numbers[-1]
-            else:
-                bill_number = billing_center.get_only_result_bill_number(
-                    billing_month,
-                    room_path,
-                    require_void=False,
-                )
-        else:
-            bill_number = bill_number_argument
-        billing_center.cleanup_bill(
-            bill_number, settings.void_reason, billing_month
+        numbers = billing_center.get_bill_numbers_by_month_room_charge_item(
+            billing_month=billing_month,
+            room_path=room_path,
+            charge_item=charge_item,
+            include_voided=True,
+            allow_empty=True,
         )
+        for bill_number in reversed(numbers):
+            billing_center.cleanup_bill(
+                bill_number, settings.void_reason, billing_month
+            )
+        remaining = billing_center.get_bill_numbers_by_month_room_charge_item(
+            billing_month=billing_month,
+            room_path=room_path,
+            charge_item=charge_item,
+            allow_empty=True,
+            include_voided=True,
+        )
+        if remaining:
+            raise AssertionError(
+                "清理后相同业务键仍匹配到账单：" + ", ".join(remaining)
+            )
 
         browser.close()
-    print(f"账单已作废并删除：{bill_number}")
+        if numbers:
+            print("账单已按业务键作废并删除：" + ", ".join(numbers))
+        else:
+            print("未发现匹配账单；业务键已确认无残留。")
 
 
 if __name__ == "__main__":

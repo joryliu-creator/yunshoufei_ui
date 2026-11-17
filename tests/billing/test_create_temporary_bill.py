@@ -13,6 +13,7 @@ from playwright.sync_api import Page
 from scripts.add_bill_demo_to_excel import TEMPORARY_CASES
 from src.config.excel_data import load_case_reference, load_excel_test_data
 from src.config.settings import settings
+from src.domain.bill_presence import BillKey, ensure_no_active_bill, skip_existing_active_bill
 from src.pages.portal_page import PortalPage
 from src.pages.temporary_ledger_page import TemporaryBillData, TemporaryLedgerPage
 
@@ -65,6 +66,36 @@ def test_create_temporary_bill_assert_amount_and_cleanup(
         temporary.wait_until_ready()
         existing_bill_numbers = temporary.visible_bill_numbers_for_room(
             data.room_path.split("/")[-1]
+        )
+
+        # 运行前按账期+房间+收费项只读预检：已有有效账单则保留原数据并跳过；
+        # 预检查询本身失败时也跳过（失败安全）。
+        def _query_bills() -> list[str]:
+            active = temporary.filter_active_bill_numbers(
+                temporary.get_bill_numbers_by_month_room_charge_item(
+                    billing_month=data.billing_month,
+                    room_path=data.room_path,
+                    charge_item=data.charge_item,
+                )
+            )
+            temporary._close_advanced_search_if_open()
+            return active
+
+        def _reopen_ledger() -> None:
+            portal.open_temporary_ledger()
+            temporary.wait_until_ready()
+
+        ensure_no_active_bill(
+            case_id=case_id,
+            entrypoint="临时台账",
+            key=BillKey(
+                billing_month=data.billing_month,
+                room_path=data.room_path,
+                charge_item=data.charge_item,
+            ),
+            record_property=record_property,
+            query=_query_bills,
+            reset=_reopen_ledger,
         )
         dialog = temporary.open_create_temporary_bill()
         temporary.fill_temporary_bill_before_submit(dialog, data)

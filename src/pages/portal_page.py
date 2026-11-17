@@ -233,8 +233,16 @@ class PortalPage:
         """Wait for a rendered portal menu or a rendered login form."""
         attempts = max(1, timeout // 500)
         for _ in range(attempts):
+            username = self.page.locator(
+                'input.el-input__inner[placeholder*="用户名"]:visible'
+            )
+            password = self.page.locator(
+                'input.el-input__inner[type="password"]:visible'
+            )
             is_login_form = (
-                "#/login" in self.page.url and self._login_inputs().count() >= 3
+                "#/login" in self.page.url
+                and username.count() == 1
+                and password.count() == 1
             )
             if is_login_form:
                 return "login"
@@ -257,18 +265,35 @@ class PortalPage:
         return self.page.locator("input.el-input__inner:visible")
 
     def _submit_login(self, username: str, password: str, captcha: str) -> None:
-        """Submit a portal login after its asynchronous captcha session settles.
+        """Submit the current username/password login form.
 
-        The standard portal may refresh the captcha session just after the
-        form is rendered. Retry exactly once only when the server explicitly
-        reports the documented captcha-expired response.
+        Older portal builds require a captcha, while the current HTTPS login
+        page may expose only username and password. Fill the captcha only
+        when that input is actually rendered; never assume a third input is
+        present. Retry once only when a rendered captcha is explicitly
+        reported expired.
         """
         for attempt in range(2):
-            inputs = self._login_inputs()
-            expect(inputs.nth(2)).to_be_visible(timeout=30_000)
-            inputs.nth(0).fill(username)
-            inputs.nth(1).fill(password)
-            inputs.nth(2).fill(captcha)
+            username_input = self.page.locator(
+                'input.el-input__inner[placeholder*="用户名"]:visible'
+            )
+            password_input = self.page.locator(
+                'input.el-input__inner[type="password"]:visible'
+            )
+            expect(username_input).to_have_count(1, timeout=30_000)
+            expect(password_input).to_have_count(1, timeout=30_000)
+            username_input.fill(username)
+            password_input.fill(password)
+            captcha_input = self.page.locator(
+                'input.el-input__inner[placeholder*="验证码"]:visible, '
+                'input.el-input__inner[placeholder*="校验码"]:visible'
+            )
+            if captcha_input.count() > 1:
+                raise AssertionError(
+                    f"登录页验证码输入框应最多一个，实际 {captcha_input.count()} 个。"
+                )
+            if captcha_input.count() == 1:
+                captcha_input.fill(captcha)
             login_button = self.page.get_by_role(
                 "button", name=re.compile(r"登\s*录")
             )
@@ -293,7 +318,11 @@ class PortalPage:
                 "验证码" in message
                 and ("过期" in message or "无效" in message)
             )
-            if attempt == 0 and (code == "JIESHUN2004" or captcha_expired):
+            if (
+                attempt == 0
+                and captcha_input.count() == 1
+                and (code == "JIESHUN2004" or captcha_expired)
+            ):
                 self.page.reload(wait_until="domcontentloaded")
                 if self._wait_for_login_or_portal(timeout=30_000) != "login":
                     raise AssertionError("验证码刷新后未回到登录表单。")
@@ -354,6 +383,17 @@ class PortalPage:
                 pass
             self.page.wait_for_timeout(300)
 
+        # New accounts may show a portal-wide migration tip that blocks every
+        # menu item. It is not an Element dialog/drawer; acknowledge only this
+        # known tip and only when its exact action is visible.
+        intro = self.page.locator(".j-theme__intro-wrap")
+        intro_action = intro.get_by_role(
+            "button", name="立即体验", exact=True
+        )
+        if intro_action.count() == 1 and intro_action.is_visible():
+            intro_action.click(timeout=3_000)
+            expect(intro_action).to_be_hidden(timeout=5_000)
+
     def open_billing_center(self) -> None:
         self._open_billing_center_once()
         if self._wait_for_billing_center_ready(timeout=15_000):
@@ -379,17 +419,34 @@ class PortalPage:
         self.dismiss_home_overlays()
         self.collapse_customer_service()
         cloud_billing = self._cloud_billing_entry()
-        if cloud_billing.is_visible():
+        cloud_classes = set((cloud_billing.get_attribute("class") or "").split())
+        if cloud_billing.is_visible() and not cloud_classes.intersection(
+            {"is-active", "active"}
+        ):
             cloud_billing.click()
 
-        billing_center = self.page.get_by_role(
-            "menuitem", name="账单中心", exact=True
-        )
-        expect(billing_center).to_be_visible(timeout=15_000)
+        # 账单中心仍属于智能计费。批次中门户会在用例间 reload，
+        # “云收费”此时已是 is-active；重复点击会重置侧栏状态，故上面
+        # 只在未激活时切换模块。然后按原菜单进入账单中心。
+        billing_center = self._smart_billing_menu_item("账单中心")
         billing_center.click()
         # 已打开过减免管理等业务页时，门户可能只更新菜单而保留旧的
         # iframe；显式点击账单中心页签，确保后续清理使用活动业务页。
         self._activate_business_tab(r"账单中心")
+
+    def _smart_billing_menu_item(self, name: str):
+        """Expand 智能计费 only when the requested child is not visible."""
+        target = self.page.get_by_role("menuitem", name=name, exact=True)
+        if not target.is_visible():
+            group = self.page.locator("li.el-submenu").filter(
+                has=self.page.locator('span[title="智能计费"]')
+            )
+            expect(group).to_have_count(1, timeout=15_000)
+            title = group.locator(":scope > .el-submenu__title")
+            expect(title).to_be_visible(timeout=15_000)
+            title.click()
+        expect(target).to_be_visible(timeout=15_000)
+        return target
 
     def _activate_business_tab(self, tab_pattern: str) -> None:
         """Wait for and activate a portal business tab after menu navigation."""
@@ -439,10 +496,7 @@ class PortalPage:
         if cloud_billing.is_visible():
             cloud_billing.click()
 
-        temporary_ledger = self.page.get_by_role(
-            "menuitem", name="临时台账", exact=True
-        )
-        expect(temporary_ledger).to_be_visible(timeout=15_000)
+        temporary_ledger = self._smart_billing_menu_item("临时台账")
         temporary_ledger.click()
         self._activate_business_tab(r"临时台账")
 
@@ -460,10 +514,7 @@ class PortalPage:
             cloud_billing = self._cloud_billing_entry()
             if cloud_billing.is_visible():
                 cloud_billing.click()
-            calculation_billing = self.page.get_by_role(
-                "menuitem", name="计费出账", exact=True
-            )
-            expect(calculation_billing).to_be_visible(timeout=15_000)
+            calculation_billing = self._smart_billing_menu_item("计费出账")
             calculation_billing.click()
             # Reuse the existing tab when the serial billing flow previously
             # visited Bill Center. Clicking the menu item alone can leave the

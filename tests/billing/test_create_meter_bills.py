@@ -9,6 +9,7 @@ from playwright.sync_api import Page
 from scripts.add_bill_demo_to_excel import METER_CASES
 from src.config.excel_data import load_case_reference, load_excel_test_data
 from src.config.settings import settings
+from src.domain.bill_presence import BillKey, ensure_no_active_bill, skip_existing_active_bill
 from src.domain.meter_charge import MeterReadingBasis, calculate_meter_amount
 from src.pages.billing_center_page import BillData, BillingCenterPage
 from src.pages.portal_page import PortalPage
@@ -93,7 +94,32 @@ def test_create_meter_bill_and_assert_amount(
         )
         portal.open_billing_center()
         billing_center.wait_until_ready()
-        billing_center.select_project(data.project_name)
+
+        def _query_bills() -> list[str]:
+            billing_center.select_project(data.project_name)
+            return billing_center.get_bill_numbers_by_month_room_charge_item(
+                billing_month=data.billing_month,
+                room_path=data.room_path,
+                charge_item=data.charge_item,
+                allow_empty=True,
+            )
+
+        def _reopen_billing_center() -> None:
+            portal.open_billing_center()
+            billing_center.wait_until_ready()
+
+        ensure_no_active_bill(
+            case_id=case_id,
+            entrypoint="账单中心",
+            key=BillKey(
+                billing_month=data.billing_month,
+                room_path=data.room_path,
+                charge_item=data.charge_item,
+            ),
+            record_property=record_property,
+            query=_query_bills,
+            reset=_reopen_billing_center,
+        )
         dialog = billing_center.open_create_bill()
         billing_center.fill_bill(dialog, data)
         created_bill = billing_center.submit_and_skip_notification(dialog, data)

@@ -397,6 +397,20 @@ class TemporaryLedgerPage(BasePage):
             numbers.add(self._extract_bill_number(rows.nth(index).inner_text()))
         return numbers
 
+    def filter_active_bill_numbers(self, numbers: list[str]) -> list[str]:
+        """Drop already-voided rows from a business-key query result.
+
+        The ledger keeps voided bills visible, so a re-run preflight must read
+        the row state before treating an ID as an existing active bill.
+        """
+        active: list[str] = []
+        for number in dict.fromkeys(numbers):
+            row = self._find_bill_row(number)
+            if row.count() >= 1 and "已作废" in row.first.inner_text():
+                continue
+            active.append(number)
+        return active
+
     def cleanup_created_bill(
         self,
         created: CreatedTemporaryBill,
@@ -605,15 +619,40 @@ class TemporaryLedgerPage(BasePage):
                 continue
             numbers.append(number)
         numbers = list(dict.fromkeys(numbers))
-        if expected_bill_number and expected_bill_number not in numbers:
+        if expected_bill_number:
+            # The exact business-key query may legitimately return older bills
+            # with the same month/room/item.  The bill number is only used here
+            # to identify the newly-created row after that query, never as a
+            # search condition.
+            if numbers.count(expected_bill_number) != 1:
+                raise AssertionError(
+                    "临时台账清理未能在业务键查询结果中唯一找到本次账单；"
+                    f"expected={expected_bill_number}, actual={numbers}；"
+                    f"month={billing_month}, room={room_path}, item={charge_item}"
+                )
+            numbers = [expected_bill_number]
+        elif len(numbers) > 1:
             raise AssertionError(
-                "临时台账按账期+房间+收费项查询后未找到本次创建账单："
-                f"expected={expected_bill_number}, actual={numbers}"
+                "临时台账业务键命中多条账单且未提供本次账单标识，安全停止；"
+                f"actual={numbers}；month={billing_month}, room={room_path}, item={charge_item}"
             )
-        if require_match and not numbers:
+        if not numbers:
+            if require_match:
+                raise AssertionError(
+                    "临时台账已创建账单，但按账期+房间+收费项清理查询结果为0："
+                    f"month={billing_month}, room={room_path}, item={charge_item}"
+                )
+            return []
+
+        matched_row = self._find_bill_row(numbers[0])
+        row_text = matched_row.inner_text()
+        if not all(
+            value in row_text
+            for value in (billing_month, room_path.split("/")[-1], charge_item)
+        ):
             raise AssertionError(
-                "临时台账已创建账单，但按账期+房间+收费项清理查询结果为0："
-                f"month={billing_month}, room={room_path}, item={charge_item}"
+                f"临时台账清理结果业务键不匹配：month={billing_month}, "
+                f"room={room_path}, item={charge_item}, row={row_text!r}"
             )
         for number in reversed(numbers):
             action_row = self._find_operation_row(number)
@@ -628,28 +667,41 @@ class TemporaryLedgerPage(BasePage):
                     f"临时台账账单 {number} 的作废操作应唯一可见，"
                     f"实际 {len(visible_voids)} 个"
                 )
-            visible_voids[0].click()
-            void_dialog = self.frame.get_by_role("dialog").filter(has_text="作废")
-            expect(void_dialog).to_be_visible(timeout=15_000)
-            self.require_single(void_dialog.get_by_role("textbox"), "作废说明").fill(void_reason)
-            void_confirm = void_dialog.get_by_role(
-                "button", name=re.compile(r"^(?:确定|确认)(?:作废)?$")
-            )
-            visible_confirms = [
-                void_confirm.nth(index)
-                for index in range(void_confirm.count())
-                if void_confirm.nth(index).is_visible()
-            ]
-            if len(visible_confirms) != 1:
-                raise AssertionError(
-                    "临时台账作废确认按钮应唯一可见，实际 "
-                    f"{len(visible_confirms)} 个；按钮={void_dialog.locator('button').all_inner_texts()}"
+            void_action = visible_voids[0]
+            bill_row = self._find_bill_row(number)
+            row_text = bill_row.inner_text()
+            if "已作废" not in row_text:
+                if not void_action.is_enabled():
+                    raise AssertionError(
+                        f"临时台账账单 {number} 不是已作废状态但作废操作不可用，安全停止；"
+                        f"结果行={row_text!r}；操作行={action_row.inner_text()!r}"
+                    )
+                void_action.click()
+                void_dialog = self.frame.get_by_role("dialog").filter(has_text="作废")
+                expect(void_dialog).to_be_visible(timeout=15_000)
+                self.require_single(void_dialog.get_by_role("textbox"), "作废说明").fill(void_reason)
+                void_confirm = void_dialog.get_by_role(
+                    "button", name=re.compile(r"^(?:确定|确认)(?:作废)?$")
                 )
-            visible_confirms[0].click()
-            expect(self.frame.locator(".el-message:visible")).to_contain_text(re.compile("作废成功"), timeout=30_000)
-            expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
-                0, timeout=30_000
-            )
+                visible_confirms = [
+                    void_confirm.nth(index)
+                    for index in range(void_confirm.count())
+                    if void_confirm.nth(index).is_visible()
+                ]
+                if len(visible_confirms) != 1:
+                    raise AssertionError(
+                        "临时台账作废确认按钮应唯一可见，实际 "
+                        f"{len(visible_confirms)} 个；按钮={void_dialog.locator('button').all_inner_texts()}"
+                    )
+                visible_confirms[0].click()
+                expect(
+                    self.frame.locator(".el-message:visible").filter(
+                        has_text="作废成功"
+                    ).first
+                ).to_be_visible(timeout=30_000)
+                expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
+                    0, timeout=30_000
+                )
 
             action_row = self._find_operation_row(number)
             delete = action_row.get_by_text("删除", exact=True)
@@ -789,10 +841,30 @@ class TemporaryLedgerPage(BasePage):
         )
         expect(room_inputs).to_have_count(1, timeout=15_000)
         room_input = room_inputs.first
-        room_input.click(force=True)
-        room_input.fill(room_leaf)
         tree = self.frame.locator(".el-tree:visible")
-        expect(tree).to_be_visible(timeout=20_000)
+        # The ledger room tree is lazily loaded once per dialog.  The first
+        # popper open after the bill-object switch can race the lazy request
+        # and render an empty "暂无数据" tree; clear the token and reopen a
+        # few times before treating the tree as unavailable.
+        tree_error: Exception | None = None
+        for tree_attempt in range(1, 4):
+            room_input.click(force=True)
+            room_input.fill(room_leaf)
+            try:
+                expect(tree).to_be_visible(timeout=20_000)
+                expect(tree.locator(".el-tree-node__content").first).to_be_visible(
+                    timeout=15_000
+                )
+                break
+            except AssertionError as exc:
+                tree_error = exc
+                if tree_attempt == 3:
+                    raise AssertionError(
+                        "临时台账房间树连续 3 次打开均为空/不可见；"
+                        f"目标={room_path!r}"
+                    ) from tree_error
+                room_input.fill("")
+                self.page.wait_for_timeout(800)
         # In the redesigned cascader the field itself is readonly; the
         # editable filter input, when present, is mounted inside the tree
         # popover.  Prefer that input and fall back to the loaded tree when a
@@ -845,21 +917,16 @@ class TemporaryLedgerPage(BasePage):
         # confirm button.  Confirm it before opening the charge selector;
         # Escape alone leaves the tree popper mounted and it can be mistaken
         # for the charge-item dropdown.
-        room_popup = tree.locator("xpath=ancestor::*[.//button][1]")
-        room_confirm = room_popup.get_by_text(re.compile(r"^确定$"), exact=True)
-        if room_confirm.count() and room_confirm.last.is_visible():
-            room_confirm.last.click(force=True)
-        elif tree.is_visible():
-            # Compatibility fallback for builds without a confirm button.
-            self.page.keyboard.press("Escape")
-        self.page.wait_for_timeout(300)
-        if tree.is_visible():
-            # Some versions keep the tree popover mounted after confirming;
-            # Escape is safe only while that popover is still visible.
-            self.page.keyboard.press("Escape")
-        expect(self.frame.locator(".el-tree:visible")).to_have_count(
-            0, timeout=10_000
+        room_popup = tree.locator(
+            "xpath=ancestor::*[contains(@class,'el-popover') or "
+            "contains(@class,'el-popper')][1]"
         )
+        expect(room_popup).to_have_count(1, timeout=10_000)
+        room_confirm = room_popup.get_by_text(re.compile(r"^确定$"), exact=True)
+        expect(room_confirm).to_have_count(1, timeout=10_000)
+        room_confirm.click()
+        expect(room_popup).to_be_hidden(timeout=10_000)
+        expect(dialog).to_be_visible(timeout=10_000)
         self.page.wait_for_timeout(500)
 
         # Do not click an arbitrary point in the drawer here.  On newer

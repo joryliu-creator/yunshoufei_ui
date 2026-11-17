@@ -50,8 +50,8 @@ def _upsert_case_sheet(wb):
     ws.append(headers)
     for item in CASES:
         sid = f"YSF-SCENE-DISCOUNT-{item['room']}"
-        steps = (f"1. 账单中心创建 A栋/1层/{item['room']} 的 2026-08 周期类账单，不先清理\n2. 进入收费设置→减免管理-新，选择项目\n3. 点击新增减免；房间输入框输入 {item['room']}，过滤后勾选叶子节点并确定\n4. 搜索并勾选账单，点击下一步\n5. 选择{item['scheme']}，{('在减免金额右侧输入框输入5，' if item['amount'] else '')}说明填写 autotest，下一步→发起审核\n6. 高级搜索直接在房间名称中选择 {item['room']} 并搜索\n7. 点击审核并确认审批通过\n8. 回到账单中心按账期+房间+收费项核对金额\n9. 验证完成后按账期+房间+收费项作废并删除本次账单")
-        ws.append([f"YSF-BILL-DISCOUNT-{item['room']}", f"SCENARIO_ID={sid}", f"A栋/1层/{item['room']}", item["scheme"], item["amount"], "autotest", "10.00", item["discount"], "5.00", "账单中心按账期+房间+收费项作废删除", "是", "已核验", steps, f"申请成功；审核通过；减免={item['discount']}；清理后组合查询结果为0"])
+        steps = (f"1. 账单中心创建 A栋/1层/{item['room']} 的 2026-08 周期类账单，不先清理\n2. 进入收费设置→减免管理-新，选择项目\n3. 点击新增减免；房间输入框输入 {item['room']}，过滤后勾选叶子节点并确定\n4. 搜索并勾选账单，点击下一步\n5. 选择{item['scheme']}，{('在减免金额右侧输入框输入5，' if item['amount'] else '')}说明填写 autotest，下一步→发起审核\n6. 高级搜索直接在房间名称中选择 {item['room']} 并搜索\n7. 点击审核并确认审批通过\n8. 回到账单中心按账期+房间+收费项核对金额\n9. 验证完成后按相同业务键唯一定位本次账单；账单编号仅作报告证据。填写作废原因后点击“更多/批量作废”并确认；按相同业务键重查并点击“更多/批量删除”确认，复查结果为0；若不唯一则停止并报告。")
+        ws.append([f"YSF-BILL-DISCOUNT-{item['room']}", f"SCENARIO_ID={sid}", f"A栋/1层/{item['room']}", item["scheme"], item["amount"], "autotest", "10.00", item["discount"], "5.00", "账单中心按账期+房间+收费项定位，批量作废、批量删除", "是", "已核验", steps, f"申请成功；审核通过；减免={item['discount']}；账单中心按业务键清理后组合查询结果为0"])
     fill = PatternFill("solid", fgColor="1F4E78")
     for cell in ws[1]: cell.font = Font(color="FFFFFF", bold=True); cell.fill = fill; cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     for row in ws.iter_rows(min_row=2):

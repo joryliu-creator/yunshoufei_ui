@@ -20,7 +20,6 @@ from src.domain.periodic_charge import (
 from src.domain.meter_charge import MeterReadingBasis, calculate_meter_amount
 from src.domain.public_share_charge import PUBLIC_SHARE_BILL_CASES
 from scripts.update_room_import_template import CHARGE_ITEM_NAMES
-from src.config.standard_name import automation_standard_name
 
 
 OUTPUT = ROOT / "UI自动化回归测试用例模板_Demo.xlsx"
@@ -62,9 +61,9 @@ CASE = [
     "9. 确认系统生成的计费期间属于“${BILLING_MONTH}”\n"
     "10. 点击“确定”\n"
     "11. 在账单通知提示中点击“不需要”\n"
-    "12. 按新账单编号定位账单，断言原始金额、减免金额、应收金额与场景预期一致\n"
-    "13. 如启用清理：勾选该账单，点击“更多/批量作废”，填写作废理由并点击“确定作废”\n"
-    "14. 再次勾选该账单，点击“更多/批量删除”，确认列表中不再显示该账单编号",
+    "12. 打开高级搜索，设置收费项和账期；‘收费对象’决定账单归属主体，切换为‘收费对象-房间’后在相邻房间树选择‘${ROOM_PATH}’并确认；‘关联对象’是关联资产的附加条件，按房间清理时留空。按账期+房间+收费项唯一核对本次账单，断言原始金额、减免金额、应收金额与场景预期一致；账单编号仅记录为报告证据\n"
+    "13. 如启用清理：按上述业务键唯一定位有效账单；若结果不唯一则停止并报告。勾选目标行，点击“更多/批量作废”，填写“${VOID_REASON}”并确认作废\n"
+    "14. 按相同业务键重新查询并确认目标已作废，勾选目标行后点击“更多/批量删除”并确认；再次查询相同组合确认结果为0",
     "SCENARIO_ID=YSF-SCENE-PERIODIC-001",
     "1. 创建账单弹窗正常打开\n"
     "2. 房间树点击“确定”后触发收费项查询；房间、收费类型、收费项、账期和日期显示为目标值\n"
@@ -73,7 +72,7 @@ CASE = [
     "5. 账单中心出现新账单并取得唯一账单编号\n"
     "6. 计费期间必须属于目标账期；不一致时禁止提交并报告失败\n"
     "7. 原始金额、减免金额、应收金额与收费场景配置中的独立预期金额一致\n"
-    "8. 启用清理时，仅按新账单编号定位的账单被作废和删除",
+    "8. 启用清理时按账期+房间+收费项唯一定位本次账单，完成填写作废原因、批量作废和批量删除；相同组合复查为0，账单编号不作为筛选条件",
     "DEFAULT / 测试管理员",
     "新增",
     "是-需确认",
@@ -82,6 +81,39 @@ CASE = [
     "smoke,billing,create-bill,side-effect",
     "有效",
     "项目统一为云收费UI自动化；预期金额由独立周期计费模型计算，不复制系统结果",
+]
+
+
+WORKBENCH_CASE = [
+    "YSF-WORKBENCH-BILL-1001",
+    "云收费",
+    "工作台/业务办理收费台",
+    "房间档案新增账单",
+    "1001房间通过工作台房间档案新增周期类账单并清理",
+    "P0",
+    "正向",
+    "是",
+    "Standard1 客户93537，使用 DEFAULT 测试管理员；A栋/1层/1001已关联UI周期性收费项及有效收费标准；创建前确认2026-08账期的同房间、同收费项无重复账单",
+    "1. 通过顶部导航进入云收费，点击左侧‘业务办理收费台’。\n"
+    "2. 选择‘按房间’，输入‘1001’，点击‘立即查询’，等待结果后点击唯一房间‘A栋/1层/1001’，等待房间收费对象档案加载。\n"
+    "3. 在‘账单信息’模块点击‘新增账单’。抽屉打开后核验收费对象默认为房间且房间已自动带入‘A栋/1层/1001’；不要再次选择房间。\n"
+    "4. 账期设为‘2026-08’，应收日期设为‘2026-08-31’。点击‘新增收费项’，搜索并选择‘UI周期性收费项’，点击抽屉右下角‘确定’。\n"
+    "5. 等待收费明细出现，点击该行‘编辑’，将最晚缴款日设为‘2026-08-31’，点击该行‘保存’。核对收费项、收费标准和金额后，点击新增账单抽屉右下角‘确定’。\n"
+    "6. 等待房间档案提示账单成功数为1。进入账单中心，按‘收费对象-房间’选择‘A栋/1层/1001’，再设置账期‘2026-08’和收费项‘UI周期性收费项’；确认三个条件都保留后搜索，唯一核对本次账单及金额。账单编号仅作证据，不作筛选条件。\n"
+    "7. 清理本次账单：按同一业务键唯一定位，批量作废并填写作废原因；重新查询后批量删除；再次按相同条件查询并确认结果为0。结果不唯一时停止清理并报告。",
+    "SCENARIO_ID=YSF-SCENE-PERIODIC-BILL-001",
+    "1. 房间档案唯一命中A栋/1层/1001；新增账单抽屉默认带入该房间，无需再次选择。\n"
+    "2. 账期为2026-08，应收日及最晚缴款日均为2026-08-31；收费项和收费标准与场景配置一致。\n"
+    "3. 创建成功数为1；账单中心按账期+房间+收费项唯一命中，原始金额及应收金额与独立预期3001.20元一致。\n"
+    "4. 批量作废、批量删除成功；按相同业务键复查结果为0。",
+    "DEFAULT / 测试管理员",
+    "新增",
+    "是-需确认",
+    "已自动化",
+    "依赖1001房间、客户、收费项及收费标准已配置；执行前检查账单唯一性；创建和批量删除必须由本地安全开关授权",
+    "regression,billing,workbench,create-bill,side-effect",
+    "有效",
+    "已在Standard1/客户93537实际验证；2026-08账期；自动带入房间，不在新增账单抽屉重复选择",
 ]
 
 
@@ -104,14 +136,14 @@ CALCULATION_CASE = [
     "7. 应收日期设置为账期月第0个月第“${CALCULATION_RULE_DAY}”日；最晚缴款日期设置为应收日期到期后第0个月第“${CALCULATION_RULE_DAY}”日，确认均为账期当月1日\n"
     "8. 点击“开始计算”，等待待处理账单的金额完成，断言金额为“${EXPECTED_RECEIVABLE_AMOUNT}”\n"
     "9. 点击“核对账单”并提交审核；点击“审核账单”-“通过”，审核说明填写“${CALCULATION_AUDIT_COMMENT}”，点击“确定”\n"
-    "10. 点击“查看账单”，跳转账单中心后按账期“${CALCULATION_BILLING_MONTH}”和房间“${ROOM_PATH}”高级筛选出唯一未作废账单，核对收费项和金额\n"
-    "11. 清理：勾选该房间筛选出的唯一账单，批量作废后再批量删除，确认房间筛选结果不再展示该账单",
+    "10. 点击“查看账单”，跳转账单中心后打开高级搜索，按顺序设置收费项“${CHARGE_ITEM}”、账期“${CALCULATION_BILLING_MONTH}”，将“收费对象”切换为“收费对象-房间”并在相邻房间树选择“${ROOM_PATH}”；“关联对象”是关联资产的附加条件，按房间清理时留空。按账期+房间+收费项筛选唯一未作废账单并核对金额；账单编号仅作证据，不作筛选条件\n"
+    "11. 清理：勾选唯一目标行，点击“更多/批量作废”并填写“${VOID_REASON}”确认；按相同业务键重新查询并勾选已作废目标，点击“更多/批量删除”确认；相同组合复查为0",
     "SCENARIO_ID=YSF-SCENE-PERIODIC-001",
     "1. 1001与周期类收费项、账期选择正确，计算条件确认按钮可用\n"
     "2. 应收日期、最晚缴款日均为账期当月1日\n"
     "3. 待处理账单金额、账单中心应收金额均为场景独立计算值\n"
     "4. 状态依次完成已计算、已核对、已审核、已出账\n"
-    "5. 仅本次房间筛选出的未作废账单被作废、删除，最终列表无该账单",
+    "5. 仅账期+房间+收费项唯一定位的本次账单被批量作废、批量删除；账单编号不作筛选条件，按相同组合复查结果为0",
     "DEFAULT / 测试管理员",
     "新增",
     "是，需确认",
@@ -385,16 +417,16 @@ def meter_case_rows(meter_scenarios):
             "7. 最晚缴款日选择“${LATEST_PAYMENT_DATE}”\n"
             "8. 根据收费标准、8月本期用量和累计读数独立计算预期应收金额\n"
             "9. 确认系统生成的计费期间属于“${BILLING_MONTH}”\n"
-            "10. 点击“确定”，在账单通知提示中点击“不需要”\n"
-            "11. 按新账单编号定位账单，断言原始金额、减免金额、应收金额与场景预期一致\n"
-            "12. 如启用清理：按新账单编号批量作废并批量删除",
+            "10. 点击创建账单抽屉右下角“确定”，在“账单创建结果”提示中选择“不需要”（不进行账单通知）\n"
+            "11. 打开高级搜索，按顺序设置收费项“${CHARGE_ITEM}”、账期“${BILLING_MONTH}”，将“收费对象”切换为“收费对象-房间”并在相邻房间树选择“${ROOM_PATH}”后确认；“关联对象”是关联资产的附加条件，按房间清理时留空。按账期+房间+收费项筛选并唯一核对本次账单；账单编号仅记录为报告证据，断言原始金额、减免金额、应收金额与场景预期一致\n"
+            "12. 如启用清理：按上述组合筛选唯一有效账单，勾选后点击“更多/批量作废”，填写“${VOID_REASON}”并确认；再勾选已作废账单，点击“更多/批量删除”并确认；重复组合筛选确认无匹配记录",
             f"SCENARIO_ID={scenario[0]}",
             "1. 创建账单弹窗正常打开\n"
             "2. 房间树确认后，仪表类收费项和账期显示为目标值\n"
             "3. 计费期间属于 2026-08\n"
             "4. 新账单取得唯一账单编号\n"
             "5. 原始金额、减免金额、应收金额与独立计算预期一致\n"
-            "6. 启用清理时，只清理本次新建账单",
+            "6. 启用清理时按账期+房间+收费项唯一定位，不以账单编号作为筛选条件；完成填写作废原因、批量作废、批量删除，并确认相同组合查询结果为0",
             "DEFAULT / 测试管理员",
             "新增",
             "是-需确认",
@@ -437,7 +469,7 @@ OBSOLETE_RUNTIME_PARAMETERS = {
 
 
 ACCOUNT_ROWS = [
-    ["DEFAULT", "standard1", "93537", "本地默认测试账号", "测试管理员", "云收费UI自动化", "云收费/账单中心", "创建账单、批量作废、批量删除", "未经授权的生产操作", "是", "真实凭据仅维护在本地环境文件"],
+    ["DEFAULT", "standard1", "93537", "本地默认测试账号", "测试管理员", "云收费UI自动化", "云收费/业务办理收费台、账单中心", "档案查看、新增账单、批量作废、批量删除", "未经授权的生产操作", "是", "真实凭据仅维护在本地环境文件"],
     ["BILLING_ADMIN", "standard1", "93537", "待本地配置", "收费管理员", "待分配", "云收费/账单中心", "出账、作废、删除", "超出授权范围的资金操作", "否", "配置项目权限、凭据和登录状态后启用"],
     ["CASHIER", "standard1", "93537", "待本地配置", "收银员", "待分配", "云收费/收银台", "缴费", "退款审批、账单删除", "否", "配置项目权限、凭据和登录状态后启用"],
     ["FINANCE_ADMIN", "standard1", "93537", "待本地配置", "财务管理员", "待分配", "云收费/实收管理", "退款、退款审核", "未经授权的账单删除", "否", "配置项目权限、凭据和登录状态后启用"],
@@ -592,9 +624,14 @@ def meter_scenario_rows():
         except KeyError as exc:
             raise ValueError(f"仪表 {meter_no} 缺少 2026-07 或 2026-08 抄表数据") from exc
         formula = str(mapping_sheet.cell(row, mapping_headers["计费公式"]).value or "").strip()
-        standard_name = automation_standard_name(
-            str(mapping_sheet.cell(row, mapping_headers["建议收费标准名称"]).value or "").strip()
-        )
+        standard_name = str(
+            mapping_sheet.cell(row, mapping_headers["建议收费标准名称"]).value or ""
+        ).strip()
+        if standard_name.startswith("AT-"):
+            raise ValueError(
+                f"仪表出账场景 {room_name} 必须引用房间绑定的正式收费标准名；"
+                f"映射表中的名称不应使用收费标准专项 AT- 前缀：{standard_name!r}"
+            )
         pricing_parameters = str(mapping_sheet.cell(row, mapping_headers["计价参数"]).value or "").strip()
         basis = MeterReadingBasis(
             period_usage=period_usage,
@@ -736,8 +773,8 @@ def calculation_case_rows() -> list[list[str]]:
             "5. 应收日期和最晚缴款日期均选择账期当月第‘${CALCULATION_RULE_DAY}’日，点击‘开始计算’\n"
             "6. 等待待处理账单金额完成，断言预期金额为‘${EXPECTED_RECEIVABLE_AMOUNT}’\n"
             "7. 点击‘核对账单’提交审核，再点击‘审核账单’-‘通过’，审核说明填写‘${CALCULATION_AUDIT_COMMENT}’\n"
-            "8. 审核通过后进入账单中心，按账期和房间筛选唯一未作废账单，核对收费项和金额\n"
-            "9. 按本次账单唯一编号执行作废和删除，确认列表不再显示该账单"
+            "8. 审核通过后进入账单中心，打开高级搜索，按顺序选择收费项、账期，再将“收费对象”设为“收费对象-房间”并选择目标房间；“关联对象”是关联资产的附加条件，按房间清理时留空。按账期+房间+收费项筛选唯一未作废账单，核对金额；账单编号只作报告证据，不作筛选条件\n"
+            "9. 勾选目标行，点击“更多/批量作废”并填写“${VOID_REASON}”确认；按相同业务键重新查询并勾选该作废账单，点击“更多/批量删除”确认；相同业务键复查为0"
         )
         case[10] = f"SCENARIO_ID={scenario_id}"
         case[11] = (
@@ -1044,13 +1081,14 @@ def main():
     # CASE is the retired pre-matrix Demo.  Do not reinsert it when rebuilding
     # the workbook; the formal 1001 Bill Center case is maintained as
     # YSF-BILL-PERIODIC-001 by the entrypoint matrix scripts.
-    for case in [*CALCULATION_CASES, *METER_CASES, *TEMPORARY_CASES]:
+    for case in [*CALCULATION_CASES, WORKBENCH_CASE, *METER_CASES, *TEMPORARY_CASES]:
         case_row = find_or_empty_row(cases, case[0])
         copy_row_style(cases, max(2, case_row - 1), case_row, 20)
         for column, value in enumerate(case, 1):
             cases.cell(case_row, column, value)
         cases.row_dimensions[case_row].height = 210
         case_rows.append(case_row)
+    cases.auto_filter.ref = f"A1:T{cases.max_row}"
 
     runtime_parameters = ensure_runtime_parameter_sheet(workbook)
 

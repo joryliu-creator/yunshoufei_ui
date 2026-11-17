@@ -14,6 +14,7 @@ from playwright.sync_api import Page, expect
 from scripts.add_bill_demo_to_excel import CALCULATION_CASES
 from src.config.excel_data import load_case_reference, load_excel_test_data
 from src.config.settings import settings
+from src.domain.bill_presence import BillKey, ensure_no_active_bill, skip_existing_active_bill
 from src.pages.billing_calculation_page import BillingCalculationPage, CalculationData
 from src.pages.billing_center_page import BillingCenterPage
 from src.pages.portal_page import PortalPage
@@ -85,7 +86,8 @@ def test_calculate_periodic_bill_then_approve_and_cleanup(
     calculation = BillingCalculationPage(fresh_login_page)
     billing_center = BillingCenterPage(fresh_login_page)
     created_bill_number: str | None = None
-    submission_started = False
+    calculation_started = False
+    test_error: BaseException | None = None
 
     try:
         portal.open_home(
@@ -94,19 +96,53 @@ def test_calculate_periodic_bill_then_approve_and_cleanup(
             environment=settings.test_environment,
             account_role=account_role,
         )
+        # 运行前按账期+房间+收费项只读预检：已有有效账单则保留原数据并跳过，
+        # 避免对同一业务键重复计费出账；预检查询本身失败时也跳过（失败安全）。
+        portal.open_billing_center()
+        billing_center.wait_until_ready()
+
+        def _query_bills() -> list[str]:
+            billing_center.select_project(data.project_name)
+            return billing_center.get_bill_numbers_by_month_room_charge_item(
+                billing_month=data.billing_month,
+                room_path=room_path,
+                charge_item=data.charge_item,
+                allow_empty=True,
+            )
+
+        def _reopen_billing_center() -> None:
+            portal.open_billing_center()
+            billing_center.wait_until_ready()
+
+        ensure_no_active_bill(
+            case_id=case_id,
+            entrypoint="计费出账",
+            key=BillKey(
+                billing_month=data.billing_month,
+                room_path=room_path,
+                charge_item=data.charge_item,
+            ),
+            record_property=record_property,
+            query=_query_bills,
+            reset=_reopen_billing_center,
+        )
         portal.open_billing_calculation()
         calculation.wait_until_ready()
+        calculation.assert_no_pending_bill(data.billing_month)
         condition_drawer = calculation.open_regular_calculation()
         calculation.configure_regular_calculation(condition_drawer, data)
         rule_drawer = calculation.open_rule_details(condition_drawer)
         calculation.configure_rule_dates(rule_drawer, data)
+        # The backend can accept the calculation even if the UI times out
+        # waiting for its response. Arm cleanup immediately before submission.
+        calculation_started = True
         calculation.start_calculation(rule_drawer)
         calculation.assert_pending_amount(
             data.billing_month,
             format(expected_amount, "f"),
             charge_item=data.charge_item,
+            room_name=data.room_name,
         )
-        submission_started = True
         calculation.reconcile_and_approve(data, format(expected_amount, "f"))
 
         # 审核通过后直接进入账单中心，按账期 + 房间筛选本次唯一账单。
@@ -140,9 +176,16 @@ def test_calculate_periodic_bill_then_approve_and_cleanup(
                 ensure_ascii=False,
             ),
         )
+    except BaseException as exc:
+        test_error = exc
+        raise
     finally:
-        # 失败时清理计费出账页待处理卡片；账单中心已出账账单由编号清理。
-        if settings.allow_bill_deletion and settings.test_environment != "prod":
+        # 失败时清理计费出账页待处理卡片；已出账账单在账单中心按业务键清理。
+        if (
+            calculation_started
+            and settings.allow_bill_deletion
+            and settings.test_environment != "prod"
+        ):
             try:
                 record_property(
                     "pending_cleanup",
@@ -152,10 +195,19 @@ def test_calculate_periodic_bill_then_approve_and_cleanup(
                     ),
                 )
             except Exception as cleanup_error:
-                Path("artifacts").mkdir(exist_ok=True)
-                Path("artifacts/calculation-pending-cleanup-error.txt").write_text(
+                artifact_dir = Path("artifacts")
+                artifact_dir.mkdir(exist_ok=True)
+                cleanup_artifact = artifact_dir / (
+                    f"calculation-pending-cleanup-error-{case_id}.txt"
+                )
+                cleanup_artifact.write_text(
                     repr(cleanup_error), encoding="utf-8"
                 )
+                if test_error is None:
+                    raise AssertionError(
+                        "计费出账用例本身通过，但待处理卡片清理失败；"
+                        f"已保存 {cleanup_artifact.as_posix()}。"
+                    ) from cleanup_error
         if created_bill_number is not None and settings.cleanup_created_bill:
             if not settings.allow_bill_deletion:
                 pytest.fail(

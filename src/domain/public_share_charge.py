@@ -101,9 +101,9 @@ PUBLIC_SHARE_BILL_CASES: tuple[PublicShareBillCase, ...] = (
         pair=("1273", "1274"),
         scheme_key="FEE-1273-1274",
         method_key="FEE_AREA",
-        expected_amount=Decimal("1560.00"),
+        expected_amount=Decimal("1800.72"),
         calculation_parameters=(
-            "BUILDING_AREA=300.12\nUSABLE_AREA=280.01\nFEE_AREA=260.00\n"
+            "BUILDING_AREA=300.12\nUSABLE_AREA=280.01\nFEE_AREA=300.12\n"
             "FLOOR=1\nUNIT_PRICE=2\nFLOOR_COEFFICIENT=3\nMONTHS=1"
         ),
     ),
@@ -112,9 +112,9 @@ PUBLIC_SHARE_BILL_CASES: tuple[PublicShareBillCase, ...] = (
         pair=("1273", "1274"),
         scheme_key="FEE-1273-1274",
         method_key="FEE_AREA",
-        expected_amount=Decimal("1890.00"),
+        expected_amount=Decimal("2162.16"),
         calculation_parameters=(
-            "BUILDING_AREA=360.36\nUSABLE_AREA=315.15\nFEE_AREA=315.00\n"
+            "BUILDING_AREA=360.36\nUSABLE_AREA=315.15\nFEE_AREA=360.36\n"
             "FLOOR=1\nUNIT_PRICE=2\nFLOOR_COEFFICIENT=3\nMONTHS=1"
         ),
     ),

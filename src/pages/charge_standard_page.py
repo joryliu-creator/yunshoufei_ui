@@ -182,23 +182,18 @@ class ChargeStandardPage(BasePage):
 
         self.page.wait_for_timeout(1_500)
         self._select(dialog.get_by_placeholder("请选择收费类型"), data.charge_type)
+        # The charge-item field is rebuilt after the project selection. Do
+        # not keep a pre-refresh locator and inspect it with an immediate
+        # count while Vue has temporarily detached the input.
+        self._select_project(dialog, data.project_name)
         charge_item = dialog.get_by_placeholder("请选择收费项")
+        expect(charge_item).to_have_count(1, timeout=20_000)
+        expect(charge_item).to_be_visible(timeout=15_000)
         expect(charge_item).to_be_enabled(timeout=15_000)
         if data.charge_type == "抽成类":
-            self._select_project(dialog, data.project_name)
-            self.page.wait_for_timeout(5_000)
-            try:
-                self._select_charge_item(charge_item, data.charge_item)
-            except AssertionError:
-                # 抽成类收费项由适用项目接口异步刷新；重选项目可触发
-                # 一次新的请求，避免沿用空的旧下拉结果。
-                self._select_project(dialog, data.project_name)
-                self.page.wait_for_timeout(5_000)
-                self._select_charge_item(charge_item, data.charge_item)
-        else:
-            self.page.wait_for_timeout(3_000)
             self._select_charge_item(charge_item, data.charge_item)
-            self._select_project(dialog, data.project_name)
+        else:
+            self._select_charge_item(charge_item, data.charge_item)
         dialog.get_by_placeholder("请输入收费标准名称").fill(data.name)
         self._select(dialog.get_by_placeholder("请选择计费公式"), data.formula)
 
@@ -453,9 +448,17 @@ class ChargeStandardPage(BasePage):
         """收费项接口会异步刷新选择值，空值时有限重选。"""
         last_error: Exception | None = None
         for _ in range(3):
-            self.page.wait_for_timeout(1_500)
             try:
+                # Project changes can briefly unmount/rebuild this select.
+                # Wait for the exact field to return before require_single()
+                # performs its intentionally immediate uniqueness check.
+                expect(input_locator).to_have_count(1, timeout=15_000)
+                expect(input_locator).to_be_visible(timeout=15_000)
+                expect(input_locator).to_be_enabled(timeout=15_000)
                 self._select(input_locator, option, max_wait_ms=30_000)
+                expect(input_locator).to_have_value(option, timeout=5_000)
+                self.page.wait_for_timeout(500)
+                expect(input_locator).to_have_value(option, timeout=5_000)
                 return
             except (AssertionError, PlaywrightTimeoutError) as exc:
                 last_error = exc
@@ -466,7 +469,7 @@ class ChargeStandardPage(BasePage):
                 self.page.keyboard.press("Escape")
             self.page.wait_for_timeout(1_500)
         raise AssertionError(
-            f"收费项 {option!r} 选择后被异步刷新为空，重试仍未稳定。"
+            f"收费项 {option!r} 未能稳定选择；最后一次错误：{last_error}"
         ) from last_error
 
     def _wait_for_formula_options(self, dialog: Locator) -> None:

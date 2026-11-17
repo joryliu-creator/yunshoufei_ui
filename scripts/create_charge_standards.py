@@ -235,13 +235,19 @@ def ensure_logged_in(
     cloud_billing.wait_for(state="visible", timeout=30_000)
 
 
+def persist_results(results: list[dict[str, str]]) -> None:
+    RESULT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    RESULT_FILE.write_text(
+        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def main() -> None:
     args = parse_args()
     load_test_environment(ROOT, args.environment, override=True)
     import os
 
     base_url = os.environ["BASE_URL"]
-    master_customer_id = os.environ["MASTER_CUSTOMER_ID"]
     profile = get_account_auth_profile(
         ROOT, args.account, args.environment, args.customer_id
     )
@@ -312,6 +318,7 @@ def main() -> None:
             browser.close()
             return
 
+        persist_results(results)
         for mapping in selected:
             result = {"room": mapping.room_name, "name": mapping.standard_name}
             try:
@@ -319,6 +326,12 @@ def main() -> None:
                     result["status"] = "skipped-by-policy"
                     result["reason"] = mapping.creation_policy
                     results.append(result)
+                    persist_results(results)
+                    print(
+                        f"PROGRESS {len(results)}/{len(selected)} "
+                        f"room={mapping.room_name} status={result['status']}",
+                        flush=True,
+                    )
                     continue
                 data = to_data(
                     mapping,
@@ -340,17 +353,25 @@ def main() -> None:
                 result["status"] = "failed"
                 result["reason"] = str(exc)
                 results.append(result)
+                persist_results(results)
+                print(
+                    f"PROGRESS {len(results)}/{len(selected)} "
+                    f"room={mapping.room_name} status=failed",
+                    flush=True,
+                )
                 if args.delete_created_on_failure:
                     standards.cancel_open_create_dialog()
                     for created_name in reversed(created_names):
                         standards.delete_exact(created_name)
                 break
             results.append(result)
+            persist_results(results)
+            print(
+                f"PROGRESS {len(results)}/{len(selected)} "
+                f"room={mapping.room_name} status={result['status']}",
+                flush=True,
+            )
 
-        RESULT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        RESULT_FILE.write_text(
-            json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
         context.close()
         browser.close()
 

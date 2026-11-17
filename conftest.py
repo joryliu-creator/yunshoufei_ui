@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Browser, BrowserContext, Page
 from urllib.parse import urlparse
 
@@ -474,10 +475,27 @@ def _reset_quick_release_shared_ui(request: pytest.FixtureRequest) -> Generator[
     # The module may still be on the same outer Home URL with a persistent
     # iframe/tab. Navigating to the identical URL is not enough to reset it;
     # reload the portal document to discard stale drawers and tree popovers.
-    page.reload(wait_until="commit", timeout=30_000)
-    page.get_by_text("云收费", exact=True).wait_for(
-        state="visible", timeout=30_000
-    )
+    portal_url = page.url
+    for attempt in range(1, 3):
+        try:
+            if attempt == 1:
+                page.reload(wait_until="commit", timeout=30_000)
+            else:
+                # A short connection reset can leave Chromium on an error
+                # document; retry the same authenticated portal URL without
+                # creating another login/session.
+                page.goto(portal_url, wait_until="commit", timeout=30_000)
+            page.get_by_text("云收费", exact=True).wait_for(
+                state="visible", timeout=30_000
+            )
+            break
+        except (PlaywrightError, AssertionError) as exc:
+            if attempt == 2:
+                raise AssertionError(
+                    "批次共享会话在两次门户重载后仍未恢复云收费菜单；"
+                    f"原始URL={portal_url!r}，最后错误={exc}"
+                ) from exc
+            page.wait_for_timeout(1_500)
     from src.pages.portal_page import PortalPage
 
     portal = PortalPage(page)

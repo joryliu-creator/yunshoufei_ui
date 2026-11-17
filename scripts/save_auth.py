@@ -56,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="不自动填写本地凭据，等待人工在浏览器中登录。",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="使用无头 Chromium 登录并保存状态，不显示浏览器窗口。",
+    )
     return parser.parse_args()
 
 
@@ -90,7 +95,7 @@ def main() -> None:
     )
     profile.auth_file.parent.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=False)
+        browser = playwright.chromium.launch(headless=args.headless)
         context = browser.new_context()
         page = context.new_page()
         page.goto(f"{settings.base_url}#/login", wait_until="domcontentloaded")

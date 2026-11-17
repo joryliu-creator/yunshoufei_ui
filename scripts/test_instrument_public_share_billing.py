@@ -24,6 +24,7 @@ from openpyxl import load_workbook
 from src.config.excel_data import DEFAULT_WORKBOOK, ROOT, load_excel_test_data
 from src.config.instrument_public_share_data import load_instrument_cases
 from src.config.settings import settings
+from src.domain.bill_presence import BillKey, ensure_no_active_bill
 from src.pages.billing_calculation_page import (
     BillingCalculationPage,
     CalculationData,
@@ -574,6 +575,23 @@ def _record(
     record_property("billing_result", json.dumps(record, ensure_ascii=False))
 
 
+def _save_amount_evidence_screenshot(page, case_id: str, phase: str) -> str:
+    """Persist a full-page screenshot for an amount mismatch before cleanup.
+
+    Playwright's own failure screenshot is taken after the business-key cleanup
+    has already removed the row, so the amount evidence has to be captured here.
+    """
+    target_dir = ROOT / "artifacts" / "amount-mismatch"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = target_dir / f"{case_id}-{phase}-{stamp}.png"
+    try:
+        page.screenshot(path=str(target), full_page=True)
+    except Exception as error:  # pragma: no cover - evidence capture is best effort
+        return f"截图失败: {type(error).__name__}: {error}"
+    return str(target)
+
+
 def _actual_amounts(billing_center: BillingCenterPage, bill_number: str) -> dict[str, Decimal | None]:
     row = billing_center._find_main_table_row(bill_number=bill_number)
     return billing_center._read_bill_amounts(row)
@@ -641,24 +659,32 @@ def test_bill_center_instrument_public_share(
     )
     portal.open_billing_center()
     billing_center.wait_until_ready()
-    billing_center.select_project(data.project_name)
-    before = billing_center.get_bill_numbers_by_month_room_charge_item(
-        billing_month=MONTH,
-        room_path=data.room_path,
-        charge_item=data.charge_item,
-        allow_empty=True,
+
+    def _query_bills() -> list[str]:
+        billing_center.select_project(data.project_name)
+        return billing_center.get_bill_numbers_by_month_room_charge_item(
+            billing_month=MONTH,
+            room_path=data.room_path,
+            charge_item=data.charge_item,
+            allow_empty=True,
+        )
+
+    def _reopen_billing_center() -> None:
+        portal.open_billing_center()
+        billing_center.wait_until_ready()
+
+    ensure_no_active_bill(
+        case_id=case.case_id,
+        entrypoint="账单中心",
+        key=BillKey(
+            billing_month=MONTH,
+            room_path=case.room.room_path,
+            charge_item=case.charge_item,
+        ),
+        record_property=record_property,
+        query=_query_bills,
+        reset=_reopen_billing_center,
     )
-    if before:
-        _record(
-            record_property,
-            phase="billing_center",
-            case=case,
-            status="blocked_preexisting_active_bill",
-            details={"existing_bill_numbers": before},
-        )
-        pytest.fail(
-            f"{case.case_id} 出账前已存在同账期+房间+收费项账单 {before}；保留原数据，不重复出账。"
-        )
     try:
         dialog = billing_center.open_create_bill()
         billing_center.fill_bill(dialog, data)
@@ -668,37 +694,36 @@ def test_bill_center_instrument_public_share(
             "discount_amount": created_bill.discount_amount,
             "receivable_amount": created_bill.receivable_amount,
         }
+        # A mismatch is evidence, not a reason to keep the row or to rewrite the
+        # expectation: record the actual amount plus a screenshot, finish the
+        # business-key cleanup, then fail this single case and move on.
+        amount_problem = ""
+        screenshot = None
         if created_bill.amount_read_error:
-            preserve_for_review = True
+            amount_problem = (
+                f"已创建但账单金额无法读取：{created_bill.amount_read_error}"
+            )
+        elif not _matches_expected(actual, case.expected_amount):
+            amount_problem = (
+                f"金额与预期不符：预期 {case.expected_amount}，"
+                f"实际 {_amount_details(actual)}"
+            )
+        if amount_problem:
+            screenshot = _save_amount_evidence_screenshot(
+                billing_center.page, case.case_id, "billing_center"
+            )
             _record(
                 record_property,
                 phase="billing_center",
                 case=case,
-                status="amount_unreadable_preserved",
+                status="amount_mismatch_recorded",
                 details={
                     "bill_number": created_bill.bill_number,
-                    "amount_read_error": created_bill.amount_read_error,
-                    "bill_row_text": created_bill.bill_row_text,
-                },
-            )
-            pytest.fail(
-                f"{case.case_id} 已创建但账单金额无法读取，保留供复查；编号 {created_bill.bill_number}"
-            )
-        if not _matches_expected(actual, case.expected_amount):
-            preserve_for_review = True
-            _record(
-                record_property,
-                phase="billing_center",
-                case=case,
-                status="amount_mismatch_preserved",
-                details={
-                    "bill_number": created_bill.bill_number,
+                    "expected": format(case.expected_amount, "f"),
                     "actual": _amount_details(actual),
+                    "bill_row_text": created_bill.bill_row_text,
+                    "screenshot": screenshot,
                 },
-            )
-            pytest.fail(
-                f"{case.case_id} 金额不符，账单保留供下午排查："
-                f"预期 {case.expected_amount}，实际 {_amount_details(actual)}，编号 {created_bill.bill_number}"
             )
         after_create = billing_center.get_bill_numbers_by_month_room_charge_item(
             billing_month=MONTH,
@@ -742,6 +767,11 @@ def test_bill_center_instrument_public_share(
                 details={"bill_number": created_bill.bill_number, "residual": residual},
             )
             pytest.fail(f"{case.case_id} 清理后仍有账单：{residual}")
+        if amount_problem:
+            pytest.fail(
+                f"{case.case_id} {amount_problem}；已保存截图 {screenshot}，"
+                "本次创建数据已按业务键清理，继续执行后续用例。"
+            )
         _record(
             record_property,
             phase="billing_center",
@@ -1002,24 +1032,32 @@ def test_calculation_instrument_public_share(
     )
     portal.open_billing_center()
     billing_center.wait_until_ready()
-    billing_center.select_project(settings.project_name)
-    before = billing_center.get_bill_numbers_by_month_room_charge_item(
-        billing_month=MONTH,
-        room_path=case.room.room_path,
-        charge_item=case.charge_item,
-        allow_empty=True,
+
+    def _query_bills() -> list[str]:
+        billing_center.select_project(settings.project_name)
+        return billing_center.get_bill_numbers_by_month_room_charge_item(
+            billing_month=MONTH,
+            room_path=case.room.room_path,
+            charge_item=case.charge_item,
+            allow_empty=True,
+        )
+
+    def _reopen_billing_center() -> None:
+        portal.open_billing_center()
+        billing_center.wait_until_ready()
+
+    ensure_no_active_bill(
+        case_id=case.case_id,
+        entrypoint="计费出账",
+        key=BillKey(
+            billing_month=MONTH,
+            room_path=case.room.room_path,
+            charge_item=case.charge_item,
+        ),
+        record_property=record_property,
+        query=_query_bills,
+        reset=_reopen_billing_center,
     )
-    if before:
-        _record(
-            record_property,
-            phase="calculation",
-            case=case,
-            status="blocked_by_existing_active_bill",
-            details={"existing_bill_numbers": before},
-        )
-        pytest.fail(
-            f"{case.case_id} 计费出账前已存在账单 {before}；不重复生成，保留供复查。"
-        )
     portal.open_billing_calculation()
     calculation.wait_until_ready()
     pending_before = _has_pending_target_bills(calculation)
@@ -1084,21 +1122,27 @@ def test_calculation_instrument_public_share(
         issued_bill_number = numbers[0]
         row = billing_center._find_main_table_row(bill_number=issued_bill_number)
         actual = billing_center._read_bill_amounts(row)
+        amount_problem = ""
+        screenshot = None
         if not _matches_expected(actual, case.expected_amount):
-            mismatch_or_ambiguous = True
+            amount_problem = (
+                f"金额与预期不符：预期 {case.expected_amount}，"
+                f"实际 {_amount_details(actual)}"
+            )
+            screenshot = _save_amount_evidence_screenshot(
+                billing_center.page, case.case_id, "calculation"
+            )
             _record(
                 record_property,
                 phase="calculation",
                 case=case,
-                status="amount_mismatch_preserved",
+                status="amount_mismatch_recorded",
                 details={
                     "bill_number": issued_bill_number,
+                    "expected": format(case.expected_amount, "f"),
                     "actual": _amount_details(actual),
+                    "screenshot": screenshot,
                 },
-            )
-            pytest.fail(
-                f"{case.case_id} 金额不符，已审核账单保留供下午排查："
-                f"预期 {case.expected_amount}，实际 {_amount_details(actual)}，编号 {issued_bill_number}"
             )
         billing_center.cleanup_by_month_room_charge_item(
             billing_month=MONTH,
@@ -1122,6 +1166,11 @@ def test_calculation_instrument_public_share(
                 details={"bill_number": issued_bill_number, "residual": residual},
             )
             pytest.fail(f"{case.case_id} 计费出账账单清理后仍有残留：{residual}")
+        if amount_problem:
+            pytest.fail(
+                f"{case.case_id} {amount_problem}；已保存截图 {screenshot}，"
+                "本次创建数据已按业务键清理，继续执行后续用例。"
+            )
         _record(
             record_property,
             phase="calculation",

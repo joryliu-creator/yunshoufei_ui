@@ -10,6 +10,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from src.config.settings import settings
+from src.domain.bill_presence import BillKey, ensure_no_active_bill, skip_existing_active_bill
 from src.pages.billing_calculation_page import BillingCalculationPage, TemporaryCalculationData
 from src.pages.billing_center_page import BillingCenterPage
 from src.pages.portal_page import PortalPage
@@ -113,6 +114,36 @@ def test_deposit_bill_in_temporary_ledger_then_room_cleanup(
         portal.open_temporary_ledger()
         ledger.wait_until_ready()
         before = ledger.visible_bill_numbers_for_room(case.room)
+
+        # 运行前按账期+房间+收费项只读预检：已有有效账单则保留原数据并跳过；
+        # 预检查询本身失败时也跳过（失败安全）。
+        def _query_bills() -> list[str]:
+            active = ledger.filter_active_bill_numbers(
+                ledger.get_bill_numbers_by_month_room_charge_item(
+                    billing_month=data.billing_month,
+                    room_path=data.room_path,
+                    charge_item=data.charge_item,
+                )
+            )
+            ledger._close_advanced_search_if_open()
+            return active
+
+        def _reopen_ledger() -> None:
+            portal.open_temporary_ledger()
+            ledger.wait_until_ready()
+
+        ensure_no_active_bill(
+            case_id=case.case_id,
+            entrypoint="临时台账",
+            key=BillKey(
+                billing_month=data.billing_month,
+                room_path=data.room_path,
+                charge_item=data.charge_item,
+            ),
+            record_property=record_property,
+            query=_query_bills,
+            reset=_reopen_ledger,
+        )
         dialog = ledger.open_create_temporary_bill()
         ledger.fill_temporary_bill_before_submit(dialog, data)
         created = ledger.submit_and_read_created_bill(
@@ -179,6 +210,36 @@ def test_deposit_bill_in_calculation_then_bill_center_cleanup(
             settings.master_customer_id,
             environment=settings.test_environment,
             account_role=account_role,
+        )
+        # 运行前按账期+房间+收费项只读预检：已有有效账单则保留原数据并跳过；
+        # 预检查询本身失败时也跳过（失败安全）。
+        portal.open_billing_center()
+        center.wait_until_ready()
+
+        def _query_bills() -> list[str]:
+            center.select_project(data.project_name)
+            return center.get_bill_numbers_by_month_room_charge_item(
+                billing_month=data.billing_month,
+                room_path=data.room_path,
+                charge_item=data.charge_item,
+                allow_empty=True,
+            )
+
+        def _reopen_billing_center() -> None:
+            portal.open_billing_center()
+            center.wait_until_ready()
+
+        ensure_no_active_bill(
+            case_id=case.case_id,
+            entrypoint="计费出账",
+            key=BillKey(
+                billing_month=data.billing_month,
+                room_path=data.room_path,
+                charge_item=data.charge_item,
+            ),
+            record_property=record_property,
+            query=_query_bills,
+            reset=_reopen_billing_center,
         )
         portal.open_billing_calculation()
         calculation.wait_until_ready()

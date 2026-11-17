@@ -4,6 +4,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 
 from playwright.sync_api import Frame, FrameLocator, Locator, Page, expect
 
@@ -590,7 +591,7 @@ class BillingCalculationPage(BasePage):
         # here is normalized by the UI to YYYY-MM and must not be asserted as
         # a day range.
         self._select_month_range(drawer, data.billing_month)
-        self._select_charge_item(drawer, data.charge_item)
+        self._select_charge_item(drawer, data.charge_item, data.charge_type)
         next_button = drawer.get_by_role(
             "button", name="已确认计算条件，下一步", exact=True
         )
@@ -709,6 +710,37 @@ class BillingCalculationPage(BasePage):
             )
         expect(details).to_be_hidden(timeout=30_000)
 
+    def assert_no_pending_bill(self, billing_month: str) -> None:
+        """Fail safely when a prior calculation card could be mistaken for this run.
+
+        The pending-card cleanup is broad. Refuse to start if any existing
+        actionable card is visible, so the test's finally block cannot remove
+        a card left by another scenario or another operator.
+        """
+        actions = ("核对账单", "审核账单", "删除")
+        matches: dict[str, str] = {}
+        for scope in self._calculation_scopes():
+            for action in actions:
+                candidates = scope.get_by_text(action, exact=True)
+                for index in range(candidates.count()):
+                    candidate = candidates.nth(index)
+                    if not candidate.is_visible():
+                        continue
+                    try:
+                        context = candidate.locator("xpath=ancestor::*[3]").inner_text()
+                    except Exception:
+                        context = candidate.inner_text()
+                    text = " ".join(context.split())[:350]
+                    # Keep one compact copy of each card/UI text; nested DOM
+                    # aliases are expected in Element UI.
+                    matches.setdefault(text, text)
+        if matches:
+            raise AssertionError(
+                f"计费出账开始前已存在待处理卡片；本条目标账期={billing_month}，"
+                "为避免审核/清理历史数据，"
+                f"本条停止且不触发兜底清理。候选={list(matches.values())[:3]!r}"
+            )
+
     def reconcile_and_approve(
         self, data: CalculationData, expected_amount: str | None = None
     ) -> None:
@@ -716,8 +748,9 @@ class BillingCalculationPage(BasePage):
             data.billing_month,
             charge_item=data.charge_item,
             expected_amount=expected_amount,
+            room_name=data.room_name,
         )
-        expect(card).to_contain_text("待核对", timeout=180_000)
+        expect(card).to_contain_text("待核对", timeout=15_000)
         reconcile = card.get_by_text("核对账单", exact=True)
         if reconcile.count() != 1:
             reconcile = card.get_by_role("button", name="核对账单", exact=True)
@@ -763,6 +796,7 @@ class BillingCalculationPage(BasePage):
             "审核账单",
             charge_item=data.charge_item,
             expected_amount=expected_amount,
+            room_name=data.room_name,
         )
         expect(audit_card).to_contain_text("待审核", timeout=30_000)
         audit = audit_card.get_by_text("审核账单", exact=True)
@@ -848,19 +882,139 @@ class BillingCalculationPage(BasePage):
         def scopes():
             return self._calculation_scopes()
 
+        def card_text(action, action_name: str) -> str:
+            for _ in range(4):
+                try:
+                    text = action.evaluate(
+                        """el => {
+                            let node = el;
+                            for (let i = 0; i < 12 && node; i++, node = node.parentElement) {
+                                const value = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+                                if (/账单\\s*\\d{4}-\\d{2}/.test(value)) return value;
+                            }
+                            return null;
+                        }""",
+                        timeout=2_000,
+                    )
+                except Exception:
+                    text = None
+                if text:
+                    return " ".join(str(text).split())
+                self.page.wait_for_timeout(150)
+            raise AssertionError(
+                f"待处理卡片的“{action_name}”操作未能关联到唯一账期卡片。"
+            )
+
+        def card_identity(text: str) -> str:
+            # Status and action labels change as a card moves through review;
+            # retain its month, amount, creator and timestamp as the stable
+            # identity used to verify that the same card disappeared.
+            stable = re.sub(
+                r"计算失败|待核对|待审核|待出账|核对账单|审核账单|查看账单|删除",
+                " ",
+                text,
+            )
+            return " ".join(stable.split())
+
+        def visible_card_texts(action_name: str) -> set[str]:
+            cards: set[str] = set()
+            for scope in scopes():
+                actions = scope.get_by_text(action_name, exact=True)
+                for index in range(actions.count()):
+                    action = actions.nth(index)
+                    if action.is_visible():
+                        try:
+                            value = card_identity(card_text(action, action_name))
+                            cards.add(value)
+                        except AssertionError:
+                            # Detail-drawer footer actions are not list cards;
+                            # they have no month-bearing ancestor and must not
+                            # be mistaken for another pending record.
+                            continue
+            return cards
+
         def last_drawer(scope):
             drawers = visible(scope, scope.locator(".el-drawer:visible"))
             if not drawers:
                 raise AssertionError("清理待处理账单时未找到详情抽屉")
             return drawers[-1]
 
-        def confirm(scope):
-            buttons = visible(scope, scope.get_by_text("确定", exact=True))
-            if len(buttons) != 1:
-                raise AssertionError(
-                    f"清理待处理账单确认按钮应唯一，实际可见 {len(buttons)} 个"
-                )
-            buttons[0].evaluate("el => el.click()")
+        def confirm(scope, expected_words=(), allow_absent=False):
+            # Element UI may mount the confirmation in the portal shell rather
+            # than the business iframe that owns the card. Search actual frames
+            # and only accept a button inside a visible confirmation container.
+            for _ in range(20):
+                candidates: dict[tuple[int, str], Locator] = {}
+                for frame in self.page.frames:
+                    for selector in (
+                        ".el-message-box__wrapper:visible",
+                        ".el-dialog__wrapper:visible",
+                        ".el-drawer:visible",
+                        ".el-dialog:visible",
+                        '[role="dialog"]:visible',
+                    ):
+                        containers = frame.locator(selector)
+                        for index in range(containers.count()):
+                            container = containers.nth(index)
+                            if not container.is_visible():
+                                continue
+                            content = " ".join(container.inner_text().split())
+                            if expected_words and not any(
+                                word in content for word in expected_words
+                            ):
+                                continue
+                            buttons = container.locator("button:visible, [role=button]:visible")
+                            for button_index in range(buttons.count()):
+                                button = buttons.nth(button_index)
+                                if " ".join(button.inner_text().split()) not in {
+                                    "确定", "确认", "确定删除", "确认删除"
+                                }:
+                                    continue
+                                key = (id(frame), button.evaluate("el => el.outerHTML"))
+                                candidates[key] = button
+                if len(candidates) == 1:
+                    next(iter(candidates.values())).evaluate("el => el.click()")
+                    return True
+                if len(candidates) > 1:
+                    raise AssertionError(
+                        "清理待处理账单确认操作不唯一，停止以避免误删。"
+                    )
+                self.page.wait_for_timeout(250)
+            if allow_absent:
+                # Some builds use a native browser confirm (Playwright's
+                # default handler dismisses it) or delete immediately. The
+                # caller must verify that the exact card disappears.
+                return False
+            raise AssertionError("清理待处理账单未找到匹配的可见确认按钮。")
+
+        def click_delete(action: Locator) -> None:
+            if not action.is_enabled():
+                raise AssertionError("待处理账单删除操作不可用，安全停止清理。")
+            # Native browser confirmation dialogs are not DOM nodes. Handle
+            # them explicitly; Element UI confirmations are handled by
+            # confirm() below.
+            def accept_native_dialog(dialog) -> None:
+                dialog.accept()
+
+            self.page.on("dialog", accept_native_dialog)
+            try:
+                action.evaluate("el => el.click()")
+            finally:
+                self.page.remove_listener("dialog", accept_native_dialog)
+
+        def wait_card_removed(target_text: str) -> None:
+            target_identity = card_identity(target_text)
+            for _ in range(40):
+                current_cards: set[str] = set()
+                for action_name in ("核对账单", "审核账单", "删除", "查看账单"):
+                    current_cards.update(visible_card_texts(action_name))
+                if target_identity not in current_cards:
+                    return
+                self.page.wait_for_timeout(250)
+            raise AssertionError(
+                "清理操作后目标待处理卡片仍存在；"
+                f"卡片={target_text[:300]!r}"
+            )
 
         # 待审核：驳回后详情页才允许删除。
         while True:
@@ -873,6 +1027,7 @@ class BillingCalculationPage(BasePage):
                     break
             if target is None or target_scope is None:
                 break
+            target_card = card_text(target, "审核账单")
             target.evaluate("el => el.click()")
             self.page.wait_for_timeout(800)
             drawer = last_drawer(target_scope)
@@ -891,15 +1046,19 @@ class BillingCalculationPage(BasePage):
             if len(fields) != 1:
                 raise AssertionError("驳回理由输入框应唯一")
             fields[0].fill(reject_reason)
-            confirm(target_scope)
+            confirm(target_scope, expected_words=("驳回",))
             self.page.wait_for_timeout(1_000)
             drawer = last_drawer(target_scope)
             delete = visible(drawer, drawer.locator(".bottom-wrap .btn1"))
             if len(delete) != 1:
                 raise AssertionError("驳回后详情未找到唯一删除按钮")
-            delete[0].evaluate("el => el.click()")
-            confirm(target_scope)
-            self.page.wait_for_timeout(1_000)
+            # Use the card identity captured before opening its detail drawer;
+            # footer actions themselves are not inside the month-bearing card.
+            delete_card = target_card
+            click_delete(delete[0])
+            confirm(target_scope, expected_words=("删除",), allow_absent=True)
+            expect(drawer).to_be_hidden(timeout=15_000)
+            wait_card_removed(delete_card)
             removed["待审核驳回删除"] += 1
 
         # 待核对：详情底部的第一个操作是删除，直接删除即可。
@@ -913,15 +1072,18 @@ class BillingCalculationPage(BasePage):
                     break
             if target is None or target_scope is None:
                 break
+            target_card = card_text(target, "核对账单")
             target.evaluate("el => el.click()")
             self.page.wait_for_timeout(800)
             drawer = last_drawer(target_scope)
             delete = visible(drawer, drawer.locator(".bottom-wrap .btn1"))
             if len(delete) != 1:
                 raise AssertionError("待核对详情未找到唯一删除按钮")
-            delete[0].evaluate("el => el.click()")
-            confirm(target_scope)
-            self.page.wait_for_timeout(1_000)
+            delete_card = target_card
+            click_delete(delete[0])
+            confirm(target_scope, expected_words=("删除",), allow_absent=True)
+            expect(drawer).to_be_hidden(timeout=15_000)
+            wait_card_removed(delete_card)
             removed["待核对删除"] += 1
 
         # 已驳回卡片：列表中直接提供删除操作。
@@ -935,10 +1097,10 @@ class BillingCalculationPage(BasePage):
                     break
             if target is None or target_scope is None:
                 break
-            target.evaluate("el => el.click()")
-            self.page.wait_for_timeout(500)
-            confirm(target_scope)
-            self.page.wait_for_timeout(1_000)
+            target_card = card_text(target, "删除")
+            click_delete(target)
+            confirm(target_scope, expected_words=("删除",), allow_absent=True)
+            wait_card_removed(target_card)
             removed["已驳回删除"] += 1
 
         return removed
@@ -948,13 +1110,63 @@ class BillingCalculationPage(BasePage):
         billing_month: str,
         expected_amount: str,
         charge_item: str | None = None,
+        room_name: str | None = None,
     ) -> None:
         card = self._wait_for_pending_bill(
-            billing_month, charge_item=charge_item, expected_amount=expected_amount
+            billing_month,
+            action_text=None,
+            charge_item=charge_item,
+            expected_amount=expected_amount,
+            room_name=room_name,
         )
-        normalized = expected_amount.replace(",", "")
-        expect(card).to_contain_text(
-            re.compile(rf"{re.escape(normalized)}(?:\.0+)?"), timeout=180_000
+        from pathlib import Path
+
+        artifacts = Path("artifacts")
+        artifacts.mkdir(exist_ok=True)
+        safe_room = re.sub(r"[^A-Za-z0-9_-]+", "-", room_name or "unknown")
+        artifact = artifacts / f"calculation-card-mismatch-{safe_room}-{billing_month}.txt"
+        expected = Decimal(expected_amount.replace(",", ""))
+        deadline = 15_000
+        elapsed = 0
+        latest_text = ""
+        amount_pattern = re.compile(
+            r"(?:常规出账账单金额|出账账单金额|账单金额)\s*([0-9,]+(?:\.\d{1,2})?)"
+        )
+        while elapsed <= deadline:
+            latest_text = " ".join(card.inner_text().split())
+            if "计算失败" in latest_text:
+                artifact.write_text(latest_text, encoding="utf-8")
+                self.page.screenshot(
+                    path=str(artifact.with_suffix(".png")), full_page=True
+                )
+                raise AssertionError(
+                    "计费出账卡片状态为‘计算失败’，即使显示金额也不视为通过；"
+                    f"房间={room_name or '未提供'}，收费项={charge_item or '未提供'}，"
+                    f"页面卡片={latest_text[:350]!r}，证据={artifact.as_posix()}"
+                )
+            match = amount_pattern.search(latest_text)
+            if match:
+                actual = Decimal(match.group(1).replace(",", ""))
+                if actual != expected:
+                    artifact.write_text(latest_text, encoding="utf-8")
+                    self.page.screenshot(
+                        path=str(artifact.with_suffix(".png")), full_page=True
+                    )
+                    raise AssertionError(
+                        f"计费出账金额不匹配：房间={room_name or '未提供'}，"
+                        f"收费项={charge_item or '未提供'}，账期={billing_month}，"
+                        f"预期={expected:.2f}，实际={actual:.2f}；"
+                        f"页面卡片={latest_text[:350]!r}，证据={artifact.as_posix()}"
+                    )
+                return
+            self.page.wait_for_timeout(500)
+            elapsed += 500
+        artifact.write_text(latest_text or "未读取到计费卡片文本", encoding="utf-8")
+        self.page.screenshot(path=str(artifact.with_suffix(".png")), full_page=True)
+        raise AssertionError(
+            f"计费出账卡片 {billing_month} 在 {deadline // 1000} 秒内未显示金额；"
+            f"预期={expected:.2f}，页面卡片={latest_text[:350]!r}，"
+            f"证据={artifact.as_posix()}"
         )
 
     def open_bill_center_result(self) -> None:
@@ -1173,7 +1385,9 @@ class BillingCalculationPage(BasePage):
         expect(inputs.nth(0)).to_have_value(billing_month)
         expect(inputs.nth(1)).to_have_value(billing_month)
 
-    def _select_charge_item(self, drawer: Locator, charge_item: str) -> None:
+    def _select_charge_item(
+        self, drawer: Locator, charge_item: str, charge_type: str = ""
+    ) -> None:
         triggers = drawer.get_by_text("请选择计费费项", exact=True)
         if triggers.count() != 1:
             triggers = drawer.locator("[placeholder='请选择计费费项']:visible")
@@ -1197,18 +1411,63 @@ class BillingCalculationPage(BasePage):
         search.press("Enter")
         self.page.wait_for_timeout(1_000)
         exact_item = picker.get_by_text(charge_item, exact=True)
-        tree_item = picker.locator(".el-tree-node__content").filter(
-            has_text=charge_item
+        item = None
+        for _ in range(30):
+            visible_exact = [
+                exact_item.nth(index)
+                for index in range(exact_item.count())
+                if exact_item.nth(index).is_visible()
+            ]
+            if len(visible_exact) == 1:
+                item = visible_exact[0]
+                break
+            if len(visible_exact) > 1:
+                rows = picker.locator(".el-tree-node__content:visible").filter(
+                    has_text=re.compile(rf"{re.escape(charge_item)}")
+                )
+                if rows.count() == 1:
+                    item = rows.first
+                    break
+                raise AssertionError(
+                    f"收费项 {charge_item!r} 有多个可见标签，无法唯一选择；"
+                    f"抽屉文本={picker.inner_text()!r}"
+                )
+
+            # The current fee-item picker groups results under the charge
+            # type. Search can return the matching leaf while its parent group
+            # remains collapsed; expand only the matching known category.
+            if charge_type:
+                category = picker.locator(
+                    ".el-tree-node__content:visible"
+                ).filter(
+                    has_text=re.compile(rf"{re.escape(charge_type)}\s*$")
+                )
+                if category.count() == 1:
+                    category_node = category.locator(
+                        "xpath=ancestor::*[contains(@class,'el-tree-node')][1]"
+                    )
+                    expand = category_node.locator(".el-tree-node__expand-icon")
+                    if expand.count() == 1 and "expanded" not in (
+                        expand.get_attribute("class") or ""
+                    ):
+                        expand.click(force=True)
+            self.page.wait_for_timeout(500)
+
+        if item is None:
+            rows = picker.locator(".el-tree-node__content:visible").all_inner_texts()
+            raise AssertionError(
+                f"收费项 {charge_item!r} 在选择抽屉中未出现为可见节点；"
+                f"收费类型={charge_type!r}，可见节点={rows[:30]!r}"
+            )
+        is_tree_row = item.evaluate(
+            "element => element.classList.contains('el-tree-node__content')"
         )
-        # Depending on the Element UI build, the label is either a direct text
-        # node or wrapped by a span inside the tree row.  Prefer the direct
-        # label when present, otherwise use the uniquely matching tree row.
-        item = exact_item
-        if exact_item.count() == 0:
-            item = tree_item
-        expect(item).to_be_visible(timeout=60_000)
-        item_row = item.locator(
-            "xpath=ancestor::*[contains(@class, 'el-tree-node__content')][1]"
+        item_row = (
+            item
+            if is_tree_row
+            else item.locator(
+                "xpath=ancestor::*[contains(@class, 'el-tree-node__content')][1]"
+            )
         )
         checkbox = item_row.locator(".el-checkbox__inner")
         if checkbox.count() == 0:
@@ -1323,11 +1582,14 @@ class BillingCalculationPage(BasePage):
     def _wait_for_pending_bill(
         self,
         billing_month: str,
-        action_text: str = "核对账单",
+        action_text: str | None = "核对账单",
         charge_item: str | None = None,
         expected_amount: str | None = None,
+        room_name: str | None = None,
     ) -> Locator:
         scopes = self._calculation_scopes()
+        from pathlib import Path
+
         for scope in scopes:
             tab = scope.get_by_text("待处理账单", exact=True)
             visible = [
@@ -1344,36 +1606,151 @@ class BillingCalculationPage(BasePage):
         )
         deadline_ms = timeout_seconds * 1_000
         elapsed_ms = 0
+        action_labels = (
+            (action_text,)
+            if action_text
+            else ("核对账单", "审核账单", "查看账单", "删除")
+        )
         while elapsed_ms < deadline_ms:
             for scope in scopes:
-                cards = scope.locator("*:visible").filter(has_text=pattern)
-                # The action is a styled div in this module rather than a
-                # semantic button. Use the exact card action text and choose
-                # the smallest matching container, not DOM order.
-                candidates = []
-                for index in range(cards.count()):
-                    candidate = cards.nth(index)
-                    if candidate.get_by_text(action_text, exact=True).count() == 0:
+                # A failed calculation may still display its amount and a
+                # Delete action, but it must never proceed to reconciliation.
+                # Surface that terminal backend state immediately instead of
+                # waiting for an action label that can never appear.
+                failed_statuses = scope.get_by_text("计算失败", exact=True)
+                for failed_index in range(failed_statuses.count()):
+                    failed_status = failed_statuses.nth(failed_index)
+                    if not failed_status.is_visible():
                         continue
-                    # Some Standard1 builds omit the charge-item label from
-                    # the pending card.  Keep the card and use the exact
-                    # expected amount as the disambiguating business key;
-                    # the charge item remains part of the calculation input.
+                    try:
+                        failed_text = failed_status.evaluate(
+                            """el => {
+                                let node = el;
+                                for (let i = 0; i < 12 && node; i++, node = node.parentElement) {
+                                    const value = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+                                    if (/账单\\s*\\d{4}-\\d{2}/.test(value)) return value;
+                                }
+                                return (el.innerText || '').trim();
+                            }""",
+                            timeout=2_000,
+                        )
+                    except Exception:
+                        failed_text = ""
+                    if not pattern.search(str(failed_text)):
+                        continue
+                    Path("artifacts").mkdir(exist_ok=True)
+                    safe_room = re.sub(r"[^A-Za-z0-9_-]+", "-", room_name or "unknown")
+                    artifact = Path(
+                        f"artifacts/calculation-failed-card-{safe_room}-{billing_month}.txt"
+                    )
+                    artifact.write_text(
+                        " ".join(str(failed_text).split()), encoding="utf-8"
+                    )
+                    self.page.screenshot(
+                        path=str(artifact.with_suffix(".png")), full_page=True
+                    )
+                    raise AssertionError(
+                        "计费出账卡片已明确进入‘计算失败’，不再等待核对/审核操作；"
+                        f"房间={room_name or '未提供'}，收费项={charge_item or '未提供'}，"
+                        f"页面卡片={str(failed_text)[:350]!r}，证据={artifact.as_posix()}"
+                    )
+                # Start from the actual visible action node, then walk only to
+                # its nearest month-bearing container. Scanning every visible
+                # ancestor via `*:visible` treats the same card, list and body
+                # as separate matches and falsely reports ambiguity.
+                candidates = []
+                for label in action_labels:
+                    actions = scope.get_by_text(label, exact=True)
+                    for index in range(actions.count()):
+                        action = actions.nth(index)
+                        if not action.is_visible():
+                            continue
+                        candidate = action
+                        candidate_text = " ".join(candidate.inner_text().split())
+                        for _ in range(10):
+                            if pattern.search(candidate_text):
+                                break
+                            parent = candidate.locator("xpath=..")
+                            if parent.count() != 1:
+                                break
+                            candidate = parent
+                            candidate_text = " ".join(
+                                candidate.inner_text().split()
+                            )
+                        if pattern.search(candidate_text):
+                            candidates.append(candidate)
+                if candidates:
+                    # Frame/scope aliases can still expose one card more than
+                    # once. Collapse identical nearest-card text before
+                    # deciding whether the business result is ambiguous.
+                    unique_candidates: dict[str, Locator] = {}
+                    for candidate in candidates:
+                        candidate_text = " ".join(candidate.inner_text().split())
+                        previous = unique_candidates.get(candidate_text)
+                        if previous is None or candidate.locator("*").count() < previous.locator("*").count():
+                            unique_candidates[candidate_text] = candidate
+                    candidates = list(unique_candidates.values())
+                    # Prefer an exact charge-item match when this build shows
+                    # it on the card; some Standard1 versions omit the label.
+                    if charge_item:
+                        item_matches = [
+                            candidate for candidate in candidates
+                            if charge_item in candidate.inner_text()
+                        ]
+                        if item_matches:
+                            candidates = item_matches
+                    if room_name:
+                        room_token = room_name.rstrip("/").split("/")[-1]
+                        room_matches = [
+                            candidate
+                            for candidate in candidates
+                            if re.search(
+                                rf"(?<!\d){re.escape(room_token)}(?!\d)",
+                                candidate.inner_text(),
+                            )
+                        ]
+                        if room_matches:
+                            candidates = room_matches
+                    # Amount is a disambiguator, not a prerequisite for finding
+                    # the card. If no amount matches and only one card remains,
+                    # return it so assert_pending_amount reports actual vs
+                    # expected instead of timing out. Multiple unmatched cards
+                    # are ambiguous and must not be picked by DOM order.
                     if expected_amount:
                         normalized = expected_amount.replace(",", "")
-                        if normalized not in candidate.inner_text().replace(",", ""):
-                            continue
-                    candidates.append(candidate)
-                if candidates:
+                        amount_matches = [
+                            candidate for candidate in candidates
+                            if normalized in candidate.inner_text().replace(",", "")
+                        ]
+                        if amount_matches:
+                            candidates = amount_matches
+                    if len(candidates) > 1:
+                        compact = [
+                            " ".join(candidate.inner_text().split())[:350]
+                            for candidate in candidates
+                        ]
+                        raise AssertionError(
+                            f"账期 {billing_month} 存在多个待处理卡片，无法唯一关联目标；"
+                            f"房间={room_name or '未提供'}，收费项={charge_item or '未提供'}，"
+                            f"预期金额={expected_amount or '未提供'}，候选={compact!r}"
+                        )
                     return min(candidates, key=lambda item: item.locator("*").count())
             self.page.wait_for_timeout(1_000)
             elapsed_ms += 1_000
-        from pathlib import Path
         Path("artifacts").mkdir(exist_ok=True)
-        Path("artifacts/calculation-pending-timeout.txt").write_text(
+        safe_room = re.sub(r"[^A-Za-z0-9_-]+", "-", room_name or "unknown")
+        artifact = Path(
+            f"artifacts/calculation-pending-timeout-{safe_room}-{billing_month}.txt"
+        )
+        artifact.write_text(
             self.shell_frame.locator("body").inner_text(), encoding="utf-8"
         )
-        raise AssertionError(f"待处理账单中等待 {billing_month} 账单卡片超时。")
+        raise AssertionError(
+            f"待处理账单中等待 {billing_month} 卡片超时；"
+            f"预期操作={action_text or '任一有效流程操作'}，房间={room_name or '未提供'}，"
+            f"收费项={charge_item or '未提供'}，预期金额={expected_amount or '未提供'}；"
+            f"证据={artifact.as_posix()}"
+        )
 
     def _open_calculation_detail(self, expected_status: str) -> Locator:
         for scope in self._calculation_scopes():

@@ -101,15 +101,15 @@ class BillingCenterPage(BasePage):
         expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
             0, timeout=60_000
         )
-        project_input = self.frame.locator(
-            "input[readonly]:not([placeholder])"
+        # Do not search for a generic readonly input across the whole frame:
+        # the advanced-search drawer has its own readonly object selectors,
+        # so a persisted drawer can make that locator ambiguous on later cases.
+        project_selector = self.require_single(
+            self.frame.locator(".jie-project:visible"), "项目选择框"
         )
-        expect(project_input).to_have_count(1, timeout=30_000)
-        project_input = self.require_single(project_input, "项目选择框")
-        project_selector = project_input.locator(
-            "xpath=ancestor::div[contains(@class, 'jie-project')][1]"
+        project_input = self.require_single(
+            project_selector.locator("input[readonly]"), "项目选择输入框"
         )
-        expect(project_selector).to_have_count(1)
         current_project_label = project_selector.locator("span.textOverflow")
         current_target = current_project_label.filter(
             has_text=re.compile(rf"^{re.escape(project_name)}$")
@@ -205,10 +205,29 @@ class BillingCenterPage(BasePage):
                 year_cell = panel.get_by_text(year, exact=True)
                 expect(year_cell).to_be_visible(timeout=5_000)
                 year_cell.click()
-        target = panel.get_by_text(month_names[month], exact=True)
+        target = self.require_single(
+            panel.get_by_text(month_names[month], exact=True),
+            f"账期月份选项 {month_names[month]}",
+        )
         expect(target).to_be_visible(timeout=10_000)
-        target.click()
+        # The portal's floating customer-service/App-download panel can open
+        # asynchronously after navigation and physically cover the picker.
+        # Collapse that known outer-page overlay before clicking the exact
+        # month cell; do not force-click through it.
+        from src.pages.portal_page import PortalPage
+
+        PortalPage(self.page).collapse_customer_service()
+        # A floating App-download widget can still geometrically overlap the
+        # picker cell while remaining outside the picker DOM. The exact visible
+        # month anchor is a non-financial filter control, so dispatch its own
+        # click only after strict uniqueness/visibility checks.
+        target.evaluate("element => element.click()")
         expect(month_input).to_have_value(billing_month, timeout=10_000)
+        # The picker closes itself after the month cell is selected; wait for
+        # its transition to finish before opening the next field. Sending
+        # Escape during that transition can close the whole advanced drawer.
+        open_panels = self.frame.locator(".el-picker-panel:visible")
+        expect(open_panels).to_have_count(0, timeout=5_000)
 
     def _add_charge_item(self, dialog: Locator, charge_item: str) -> None:
         """Use the new charge-item drawer instead of the legacy inline select."""
@@ -223,7 +242,16 @@ class BillingCenterPage(BasePage):
                 "创建账单明细区域“新增收费项”应唯一可见，实际 "
                 f"{len(visible_add_buttons)} 个。"
             )
-        visible_add_buttons[0].click()
+        try:
+            visible_add_buttons[0].click()
+        except PlaywrightError as exc:
+            # On the long creation drawer a teleported popover reference can
+            # overlap this exact button even though the button is visible and
+            # enabled.  Use its native click only for that verified hit-test
+            # interception; other click failures still propagate unchanged.
+            if "intercepts pointer events" not in str(exc):
+                raise
+            visible_add_buttons[0].evaluate("element => element.click()")
 
         picker_candidates = self.frame.locator(
             ".el-drawer[role='dialog']:visible"
@@ -546,10 +574,22 @@ class BillingCenterPage(BasePage):
 
         expect(result_dialog).to_be_hidden(timeout=30_000)
         expect(dialog).to_be_hidden(timeout=30_000)
-        row = self._find_main_table_row(
+        # Creation refreshes the list but may preserve a previous case's
+        # advanced-search filters. Reapply the complete business key before
+        # reading the new row; the separate associated-object field remains
+        # intentionally unset.
+        matching_numbers = self.get_bill_numbers_by_month_room_charge_item(
+            billing_month=data.billing_month,
             room_path=data.room_path,
             charge_item=data.charge_item,
-            receivable_date=data.receivable_date,
+        )
+        if len(matching_numbers) != 1:
+            raise AssertionError(
+                "账单创建成功后，按账期+房间+收费项应唯一命中本次账单；"
+                f"实际编号={matching_numbers!r}。"
+            )
+        row = self._find_main_table_row(
+            bill_number=matching_numbers[0],
         )
         expect(row).to_be_visible(timeout=30_000)
 
@@ -561,12 +601,17 @@ class BillingCenterPage(BasePage):
         )
         bill_row_text = main_row.inner_text()
 
-        bill_number_cell = self.require_single(
-            main_row.locator('td[class*="_column_25"]'), "账单编号单元格"
-        )
-        bill_number = bill_number_cell.inner_text().strip()
-        if not bill_number:
-            raise AssertionError("创建成功后未读取到账单编号。")
+        bill_number_candidates = {
+            text.strip()
+            for text in main_row.locator("td").all_inner_texts()
+            if re.fullmatch(r"ZD[A-Z0-9]+", text.strip())
+        }
+        if bill_number_candidates != {matching_numbers[0]}:
+            raise AssertionError(
+                "账单业务行中的编号单元格与完整业务键查询结果不一致；"
+                f"查询编号={matching_numbers[0]!r}，行内编号={sorted(bill_number_candidates)!r}。"
+            )
+        bill_number = matching_numbers[0]
 
         amount_error = ""
         try:
@@ -749,9 +794,32 @@ class BillingCenterPage(BasePage):
         self._open_more_action("批量删除")
 
         delete_prompt = self.frame.get_by_text(
-            re.compile(r"删除后.*不可恢复.*确定.*删除")
+            re.compile(r"(?:删除后.*不可恢复|不可恢复.*删除|确定删除)")
         )
-        expect(delete_prompt).to_be_visible(timeout=15_000)
+        try:
+            expect(delete_prompt).to_be_visible(timeout=5_000)
+        except AssertionError:
+            # The action menu can remain mounted after a text-node click in
+            # some portal builds. Click the actual menu button once, then wait
+            # for the confirmation UI instead of assuming the first click
+            # invoked the delete action.
+            action_buttons = self.frame.get_by_role(
+                "button", name="批量删除", exact=True
+            )
+            visible_buttons = [
+                action_buttons.nth(index)
+                for index in range(action_buttons.count())
+                if action_buttons.nth(index).is_visible()
+            ]
+            if len(visible_buttons) == 1:
+                # The floating customer-service widget can intercept the
+                # pointer even when it is not marked `.open`; this is a
+                # destructive action only after the exact business-key row
+                # was selected above. Use the button's click handler directly
+                # for the same reason as `_open_more_action`: the overlay may
+                # intercept another forced pointer click as well.
+                visible_buttons[0].evaluate("element => element.click()")
+            expect(delete_prompt).to_be_visible(timeout=15_000)
         delete_panel = delete_prompt.locator("xpath=ancestor::*[.//button][1]")
         delete_confirm = delete_panel.get_by_text("确定", exact=True)
         self.require_single(delete_confirm, "批量删除确认按钮").click()
@@ -860,18 +928,24 @@ class BillingCenterPage(BasePage):
             has_text=re.compile(r"^\s*更多\s*")
         )
         self.require_single(more_button, "更多按钮").click()
-        action_locator = self.frame.get_by_text(action, exact=True)
+        action_buttons = self.frame.get_by_role(
+            "button", name=action, exact=True
+        )
         visible_actions = [
-            action_locator.nth(index)
-            for index in range(action_locator.count())
-            if action_locator.nth(index).is_visible()
+            action_buttons.nth(index)
+            for index in range(action_buttons.count())
+            if action_buttons.nth(index).is_visible()
         ]
         if len(visible_actions) != 1:
             raise AssertionError(
                 f"更多菜单中的 {action} 应唯一可见，实际可见 "
                 f"{len(visible_actions)} 个。"
             )
-        visible_actions[0].click(force=True)
+        # The app-download/customer-service float can overlay the toolbar
+        # area while the tooltip menu remains visible. A forced mouse click
+        # then lands on that overlay and leaves the menu unchanged. Dispatch
+        # the click on the exact, uniquely visible menu button itself.
+        visible_actions[0].evaluate("element => element.click()")
 
     def get_only_result_bill_number(
         self,
@@ -925,16 +999,10 @@ class BillingCenterPage(BasePage):
         filtering the exact room and month, then validates the uniquely
         matching active bill before reading its generated number.
         """
-        self._filter_billing_month(billing_month)
-        search = self._open_advanced_search()
-        self._select_advanced_room(search, room_path)
-        search_button = self.require_single(
-            search.get_by_role("button", name="搜索", exact=True),
-            "账单中心高级搜索提交按钮",
-        )
-        search_button.click()
-        expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
-            0, timeout=60_000
+        self._search_advanced_business_key(
+            billing_month=billing_month,
+            room_path=room_path,
+            charge_item=charge_item,
         )
 
         rows = self._find_main_table_row(
@@ -972,15 +1040,10 @@ class BillingCenterPage(BasePage):
         allow_empty: bool = False,
     ) -> list[str]:
         """Return every active matching bill number for duplicate cleanup."""
-        self._filter_billing_month(billing_month)
-        search = self._open_advanced_search()
-        self._select_advanced_room(search, room_path)
-        self.require_single(
-            search.get_by_role("button", name="搜索", exact=True),
-            "账单中心高级搜索提交按钮",
-        ).click()
-        expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
-            0, timeout=60_000
+        self._search_advanced_business_key(
+            billing_month=billing_month,
+            room_path=room_path,
+            charge_item=charge_item,
         )
         rows = self._find_main_table_row(
             room_path=room_path,
@@ -1016,7 +1079,7 @@ class BillingCenterPage(BasePage):
 
     def get_bill_numbers_by_month_room_charge_item(
         self, *, billing_month: str, room_path: str, charge_item: str,
-        allow_empty: bool = False,
+        allow_empty: bool = False, include_voided: bool = False,
     ) -> list[str]:
         """Resolve active Bill Center rows without relying on advanced room tree."""
         # Approval and Bill Center list refresh are eventually consistent.  A
@@ -1025,7 +1088,11 @@ class BillingCenterPage(BasePage):
         # query a few times before declaring the bill missing.
         last_body = ""
         for attempt in range(1, 4):
-            self._filter_billing_month(billing_month)
+            self._search_advanced_business_key(
+                billing_month=billing_month,
+                room_path=room_path,
+                charge_item=charge_item,
+            )
             rows = self._find_main_table_row(
                 room_path=room_path, charge_item=charge_item
             )
@@ -1035,7 +1102,7 @@ class BillingCenterPage(BasePage):
                 if not row.is_visible():
                     continue
                 text = row.inner_text()
-                if "已作废" in text:
+                if "已作废" in text and not include_voided:
                     continue
                 match = re.search(r"ZD[A-Z0-9]+", text)
                 if match:
@@ -1048,12 +1115,28 @@ class BillingCenterPage(BasePage):
         if allow_empty:
             return []
         Path("artifacts").mkdir(exist_ok=True)
-        Path("artifacts/billing-center-room-charge-miss.txt").write_text(
-            last_body, encoding="utf-8"
+        safe_room = re.sub(r"[^A-Za-z0-9_-]+", "-", room_path)
+        safe_item = re.sub(r"[^A-Za-z0-9_-]+", "-", charge_item)
+        artifact = Path(
+            f"artifacts/billing-center-room-charge-miss-{safe_room}-"
+            f"{safe_item}-{billing_month}.txt"
+        )
+        artifact.write_text(
+            "\n".join(
+                (
+                    f"billing_month={billing_month}",
+                    f"room_path={room_path}",
+                    f"charge_item={charge_item}",
+                    "query_attempts=3",
+                    "--- visible page body ---",
+                    last_body,
+                )
+            ),
+            encoding="utf-8",
         )
         raise AssertionError(
             "账单中心未找到指定账期、房间和收费项的有效账单；"
-            "已完成3次查询并保存页面证据 artifacts/billing-center-room-charge-miss.txt"
+            f"已完成3次查询并保存页面证据 {artifact.as_posix()}"
         )
 
     def cleanup_by_month_room_charge_item(
@@ -1066,10 +1149,23 @@ class BillingCenterPage(BasePage):
         captured numbers are used only internally after the exact query.
         """
         numbers = self.get_bill_numbers_by_month_room_charge_item(
-            billing_month=billing_month, room_path=room_path, charge_item=charge_item
+            billing_month=billing_month, room_path=room_path, charge_item=charge_item,
+            include_voided=True,
         )
         for number in reversed(dict.fromkeys(numbers)):
             self.cleanup_bill(number, void_reason, billing_month)
+        remaining = self.get_bill_numbers_by_month_room_charge_item(
+            billing_month=billing_month,
+            room_path=room_path,
+            charge_item=charge_item,
+            allow_empty=True,
+            include_voided=True,
+        )
+        if remaining:
+            raise AssertionError(
+                "账单中心清理后，相同账期+房间+收费项仍命中有效账单："
+                + ", ".join(remaining)
+            )
         return numbers
 
     def get_active_temporary_bill_numbers(self, *, billing_month: str) -> list[str]:
@@ -1134,7 +1230,41 @@ class BillingCenterPage(BasePage):
         expect(drawer).to_have_count(1, timeout=15_000)
         return drawer
 
-    def _select_advanced_room(self, drawer: Locator, room_path: str) -> None:
+    def _select_advanced_room(
+        self, drawer: Locator, room_path: str, billing_month: str
+    ) -> None:
+        # 云收费新列表将房间筛选合并到“收费对象”。先选择对象类型，
+        # 再使用右侧房间树；不要混用下方独立的“关联对象”筛选。
+        new_object_filter = drawer.get_by_text("收费对象", exact=True).count() == 1
+        if new_object_filter:
+            selectors = drawer.locator('input[readonly][placeholder="请选择"]:visible')
+            object_selectors = [
+                selectors.nth(i) for i in range(selectors.count())
+                if selectors.nth(i).input_value().startswith("收费对象-")
+            ]
+            if len(object_selectors) != 1:
+                raise AssertionError(
+                    f"高级搜索收费对象类型控件应唯一，实际 {len(object_selectors)} 个。"
+                )
+            object_selector = object_selectors[0]
+            room_filter = object_selector.locator(
+                "xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' jie-dialog-label ')][1]"
+            )
+            if object_selector.input_value() != "收费对象-房间":
+                object_select = self.require_single(
+                    object_selector.locator(
+                        "xpath=ancestor::*[contains(@class,'el-select')][1]"
+                    ),
+                    "收费对象类型下拉框",
+                )
+                expect(object_select).to_be_visible(timeout=10_000)
+                object_select.click()
+                room_option = self.frame.locator(
+                    ".el-select-dropdown:visible .el-select-dropdown__item"
+                ).filter(has_text=re.compile(r"^收费对象-房间$"))
+                expect(room_option).to_have_count(1, timeout=10_000)
+                room_option.click()
+                expect(object_selector).to_have_value("收费对象-房间")
         # Some deployments default the bill-object selector to 全部; the
         # adjacent room field is not active until that selector is 房间.
         all_object = drawer.get_by_text(
@@ -1155,11 +1285,47 @@ class BillingCenterPage(BasePage):
             ).filter(has_text=re.compile(r"^房间$"))
             expect(room_option).to_have_count(1, timeout=10_000)
             room_option.click(force=True)
-        room_label = self.require_single(
-            drawer.get_by_text("房间名称", exact=True), "高级搜索房间名称标签"
+        if not new_object_filter:
+            room_label = self.require_single(
+                drawer.get_by_text("房间名称", exact=True), "高级搜索房间名称标签"
+            )
+            room_filter = room_label.locator(
+                "xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' jie-dialog-label ')][1]"
+            )
+        parts = [part for part in room_path.split("/") if part]
+        if not parts:
+            raise ValueError(f"房间路径不能为空：{room_path!r}")
+        room_field = self.require_single(room_filter, "高级搜索房间筛选字段")
+        room_content = self.require_single(
+            room_field.locator(".jie-content"), "高级搜索房间筛选内容"
         )
-        inputs = drawer.locator(
-            '.jie-content .select-input input[placeholder="请选择"]:visible'
+        # After an advanced-search query, Element UI may retain the selected
+        # room tag and hide/disable its editable input. Reuse an exact existing
+        # room condition instead of failing on a missing editor or reopening
+        # the tree unnecessarily.
+        existing_room_tags = room_content.locator(".tags-info .el-tag:visible")
+        existing_room_texts: list[str] = []
+        for index in range(existing_room_tags.count()):
+            tag = existing_room_tags.nth(index)
+            content = tag.locator(".el-tag__content")
+            text = content.inner_text() if content.count() == 1 else tag.inner_text()
+            existing_room_texts.append(" ".join(text.split()))
+        if len(existing_room_texts) == 1 and existing_room_texts[0] in {
+            parts[-1],
+            room_path,
+        }:
+            return
+        for index in reversed(range(existing_room_tags.count())):
+            tag = existing_room_tags.nth(index)
+            close = tag.locator(".el-tag__close")
+            if close.count() != 1:
+                raise AssertionError(
+                    "房间筛选保留了其他房间，但没有唯一移除按钮；"
+                    f"现有标签={existing_room_texts!r}。"
+                )
+            close.click(force=True)
+        inputs = room_content.locator(
+            '.select-input input[placeholder="请选择"]:visible'
             ':not([readonly]):not([disabled])'
         )
         if inputs.count() != 1:
@@ -1167,9 +1333,6 @@ class BillingCenterPage(BasePage):
                 "高级搜索房间名称右侧可编辑‘请选择’输入框应唯一，"
                 f"实际 {inputs.count()} 个。"
             )
-        room_field = inputs.first.locator(
-            "xpath=ancestor::*[contains(@class,'jie-content')][1]"
-        )
         # Advanced Search persists previously selected rooms across queries.
         # Its compact tag view shows only the first room plus a count (e.g.
         # "1006 +4").  Remove tags from this room field before selecting the
@@ -1190,16 +1353,37 @@ class BillingCenterPage(BasePage):
         # before expanding A栋 suppresses lazy-loaded descendants, so expand
         # only the known path first instead of filtering an unloaded tree.
         room_input = inputs.first
-        room_input.click(force=True)
         # A previous advanced-search query can leave its leaf filter in this
         # input.  Clear that token before loading the known ancestor path.
-        room_input.fill("")
+        # The room tree is lazily loaded per bill-center project; on this
+        # build the first popper open occasionally renders an empty
+        # "暂无数据" tree when the lazy request loses the race with the
+        # popper transition.  Dismiss and reopen the popper a few times so a
+        # transient empty tree does not abort the whole case.
         tree = self.frame.locator(".el-tree:visible")
-        expect(tree).to_have_count(1, timeout=20_000)
-        expect(tree.locator(".el-tree-node__content").first).to_be_visible(
-            timeout=20_000
-        )
-        parts = [part for part in room_path.split("/") if part]
+        tree_error: Exception | None = None
+        for tree_attempt in range(1, 4):
+            room_input.click(force=True)
+            room_input.fill("")
+            try:
+                expect(tree).to_have_count(1, timeout=20_000)
+                expect(tree.locator(".el-tree-node__content").first).to_be_visible(
+                    timeout=20_000
+                )
+                break
+            except AssertionError as exc:
+                tree_error = exc
+                if tree_attempt == 3:
+                    labels = tree.locator(".el-tree-node__content").all_inner_texts()
+                    raise AssertionError(
+                        "高级搜索房间树连续 3 次打开均为空/不可见；"
+                        f"可见节点数={len(labels)}，目标={room_path!r}"
+                    ) from tree_error
+                # Clicking the filter block itself lands outside the popper
+                # and dismisses it, which re-triggers the lazy room request
+                # on the next open.
+                room_field.click(force=True)
+                self.page.wait_for_timeout(800)
         for index, part in enumerate(parts[:-1]):
             ancestor = tree.get_by_text(part, exact=True)
             expect(ancestor).to_have_count(1, timeout=20_000)
@@ -1235,10 +1419,62 @@ class BillingCenterPage(BasePage):
                     ) from retry_exc
         leaf = tree.get_by_text(parts[-1], exact=True)
         expect(leaf).to_have_count(1, timeout=20_000)
-        checkbox = leaf.locator(
-            "xpath=ancestor::*[contains(@class,'el-tree-node__content')][1]"
-        ).locator(".el-checkbox__inner:visible")
-        self.require_single(checkbox, "高级搜索目标房间勾选框").click(force=True)
+        node_content = self.require_single(
+            leaf.locator(
+                "xpath=ancestor::*[contains(@class,'el-tree-node__content')][1]"
+            ),
+            "高级搜索目标房间树节点",
+        )
+        checkbox = self.require_single(
+            node_content.locator(".el-checkbox__inner:visible"),
+            "高级搜索目标房间勾选框",
+        )
+        checkbox_state = node_content.locator(".el-checkbox__input")
+        self.require_single(checkbox_state, "高级搜索目标房间勾选状态")
+        # The room tags and the lazily-rendered tree can get out of sync after
+        # a previous advanced-search query.  Clearing a tag alone does not
+        # always reset the tree's checked leaf, so remove any other checked
+        # room leaves before selecting the target.  Only numeric room leaves
+        # are touched; building/floor parent checkboxes are left alone.
+        for _ in range(60):
+            checked_room_rows = tree.locator(
+                ".el-tree-node__content:visible:has(.el-checkbox__input.is-checked)"
+            )
+            stale_row = None
+            stale_text = ""
+            for index in range(checked_room_rows.count()):
+                candidate = checked_room_rows.nth(index)
+                candidate_text = " ".join(candidate.inner_text().split())
+                room_tokens = re.findall(r"(?<!\d)\d{3,5}(?!\d)", candidate_text)
+                if room_tokens and room_tokens[-1] != parts[-1]:
+                    stale_row, stale_text = candidate, candidate_text
+                    break
+            if stale_row is None:
+                break
+            checked_state = stale_row.locator(".el-checkbox__input.is-checked")
+            checked_box = stale_row.locator(".el-checkbox__inner")
+            if checked_state.count() != 1 or checked_box.count() != 1:
+                raise AssertionError(
+                    "高级搜索房间树存在旧的已勾选房间，但无法唯一取消；"
+                    f"目标={room_path!r}，旧节点={stale_text!r}。"
+                )
+            checked_box.click(force=True)
+            expect(stale_row.locator(".el-checkbox__input")).not_to_have_class(
+                re.compile(r"\bis-checked\b"), timeout=5_000
+            )
+        else:
+            raise AssertionError(
+                f"高级搜索房间树旧房间选择超过60项，停止；目标={room_path!r}。"
+            )
+
+        # Make the target selection idempotent: never toggle an already
+        # checked target off.
+        is_checked = checkbox_state.evaluate(
+            "element => element.classList.contains('is-checked')"
+        )
+        if not is_checked:
+            checkbox.click(force=True)
+        expect(checkbox_state).to_have_class(re.compile(r"\bis-checked\b"))
         panel = tree.locator("xpath=ancestor::*[.//button][1]")
         confirm = panel.get_by_text("确定", exact=True)
         confirm = self.require_single(confirm, "高级搜索房间确认按钮")
@@ -1248,8 +1484,307 @@ class BillingCenterPage(BasePage):
         # button click after the exact room checkbox is selected.
         confirm.evaluate("element => element.closest('button').click()")
         selected_tags = room_field.locator(".tags-info .el-tag")
-        expect(selected_tags).to_have_count(1, timeout=15_000)
-        expect(selected_tags.first).to_contain_text(parts[-1], timeout=15_000)
+        try:
+            expect(selected_tags).to_have_count(1, timeout=15_000)
+        except AssertionError as exc:
+            checked_nodes = tree.locator(
+                ".el-tree-node.is-checked .el-tree-node__content"
+            ).all_inner_texts()
+            raise AssertionError(
+                "房间树确认后没有唯一房间标签；"
+                f"目标={room_path!r}，输入值={room_input.input_value()!r}，"
+                f"房间筛选文本={room_field.inner_text()!r}，"
+                f"已勾选树节点={checked_nodes[:20]!r}。"
+            ) from exc
+        tag_content = selected_tags.first.locator(".el-tag__content")
+        selected_room = (
+            tag_content.inner_text()
+            if tag_content.count() == 1
+            else selected_tags.first.inner_text()
+        )
+        selected_room = " ".join(selected_room.split())
+        if selected_room not in {parts[-1], room_path}:
+            Path("artifacts").mkdir(exist_ok=True)
+            safe_room = re.sub(r"[^A-Za-z0-9_-]+", "-", parts[-1])
+            artifact = Path(
+                f"artifacts/billing-center-room-filter-{safe_room}-{billing_month}.txt"
+            )
+            artifact.write_text(
+                "\n".join(
+                    (
+                        f"target={room_path}",
+                        f"selected={selected_room}",
+                        f"room_field={room_field.inner_text()}",
+                        f"checked_nodes={tree.locator('.el-tree-node.is-checked .el-tree-node__content').all_inner_texts()!r}",
+                        f"drawer={drawer.inner_text()}",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            raise AssertionError(
+                "账单中心高级搜索确认的房间与目标房间不一致；"
+                f"目标={room_path!r}，实际={selected_room!r}，证据={artifact.as_posix()}"
+            )
+
+    def _set_advanced_billing_month(
+        self, drawer: Locator, billing_month: str
+    ) -> Locator:
+        # The drawer contains two date ranges (billing period first, creation
+        # time later), and both reuse the same placeholders.  Keep the first
+        # range in DOM order: on the verified layout this is the billing
+        # period shown at the top of Advanced Search.
+        starts = drawer.get_by_placeholder("选择开始日期")
+        ends = drawer.get_by_placeholder("选择结束日期")
+        if starts.count() < 1 or ends.count() < 1:
+            raise AssertionError(
+                "账单中心高级搜索缺少账期起止日期输入框，"
+                f"开始数={starts.count()}，结束数={ends.count()}。"
+            )
+        def visible_field(locator: Locator, label: str) -> Locator:
+            for _ in range(20):
+                visible = [
+                    locator.nth(index)
+                    for index in range(locator.count())
+                    if locator.nth(index).is_visible()
+                ]
+                if visible:
+                    return visible[0]
+                self.page.wait_for_timeout(250)
+            raise AssertionError(
+                f"高级搜索{label}日期控件未变为可见；"
+                f"候选数={locator.count()}，抽屉可见={drawer.is_visible()}。"
+            )
+
+        start = visible_field(starts, "开始")
+        end = visible_field(ends, "结束")
+        # These are Element UI month-picker inputs. Filling text alone leaves
+        # the internal picker model unchanged and may leave its popper open;
+        # use the same verified month-cell interaction as bill creation.
+        self._select_billing_month(start, billing_month)
+        self._select_billing_month(end, billing_month)
+        expect(start).to_have_value(billing_month)
+        expect(end).to_have_value(billing_month)
+        expect(
+            self.frame.locator(".el-picker-panel:visible")
+        ).to_have_count(0, timeout=5_000)
+        expect(drawer).to_be_visible(timeout=10_000)
+        return drawer
+
+    def _select_advanced_charge_item(
+        self, drawer: Locator, charge_item: str
+    ) -> None:
+        fields = drawer.locator(".jie-dialog-label").filter(
+            has_text=re.compile(r"^收费项")
+        )
+        field = self.require_single(fields, "账单中心高级搜索收费项字段")
+        select = self.require_single(
+            field.locator(".el-select"), "账单中心高级搜索收费项多选框"
+        )
+        selected_tag_nodes = select.locator(".el-tag:visible")
+        selected_values = [
+            " ".join(
+                (
+                    tag.locator(".el-tag__content").inner_text()
+                    if tag.locator(".el-tag__content").count() == 1
+                    else tag.inner_text()
+                ).split()
+            )
+            for tag in [
+                selected_tag_nodes.nth(i)
+                for i in range(selected_tag_nodes.count())
+            ]
+        ]
+        if selected_values == [charge_item]:
+            return
+        # Advanced Search can preserve the prior multi-select across serial
+        # queries. Adding the next fee item without removing the old tag makes
+        # the query key broader/ambiguous and can yield zero or wrong rows.
+        # Normalize this criterion to exactly the requested fee item.
+        for index in reversed(range(selected_tag_nodes.count())):
+            tag = selected_tag_nodes.nth(index)
+            close = tag.locator(".el-tag__close")
+            if close.count() != 1:
+                raise AssertionError(
+                    "高级搜索收费项保留了旧条件，但没有唯一移除按钮；"
+                    f"当前收费项={selected_values!r}，目标={charge_item!r}"
+                )
+            close.click(force=True)
+        expect(select.locator(".el-tag:visible")).to_have_count(0, timeout=10_000)
+        # This is a multi-select with an inner filter input. Clicking its
+        # readonly display input is intercepted by that child input, so open
+        # the dropdown through the actual filter control.
+        filter_input = select.locator("input.el-select__input")
+        self.require_single(filter_input, "收费项多选筛选输入框").click()
+        dropdown = self.frame.locator(".el-select-dropdown:visible").last
+        expect(dropdown).to_be_visible(timeout=10_000)
+        option = dropdown.locator(
+            ".el-select-dropdown__item"
+        ).filter(has_text=re.compile(rf"^{re.escape(charge_item)}$"))
+        expect(option).to_have_count(1, timeout=15_000)
+        option.click()
+        option_class = option.get_attribute("class") or ""
+        option_aria_selected = option.get_attribute("aria-selected") or ""
+        option_checkbox = option.locator(".el-checkbox")
+        checkbox_class = (
+            option_checkbox.get_attribute("class") or ""
+            if option_checkbox.count()
+            else ""
+        )
+        selected_tags = select.locator(".el-tag__content:visible")
+        tags = [text.strip() for text in selected_tags.all_inner_texts()]
+        values = field.locator("input").evaluate_all(
+            "els => els.map(input => input.value.trim())"
+        )
+        selected_in_dropdown = (
+            "selected" in option_class.split()
+            or "is-selected" in option_class.split()
+            or option_aria_selected.lower() == "true"
+            or "is-checked" in checkbox_class.split()
+        )
+        if not selected_in_dropdown and charge_item not in tags and charge_item not in values:
+            raise AssertionError(
+                "收费项选项点击后未回显目标值；"
+                f"目标={charge_item!r}，标签={tags!r}，输入值={values!r}，"
+                f"下拉选项class={option_class!r}，aria-selected={option_aria_selected!r}，"
+                f"checkbox class={checkbox_class!r}，字段文本={field.inner_text()!r}。"
+            )
+        final_tags = [
+            " ".join(text.split())
+            for text in select.locator(".el-tag__content:visible").all_inner_texts()
+            if text.strip()
+        ]
+        if final_tags and final_tags != [charge_item]:
+            raise AssertionError(
+                "高级搜索收费项未规范为唯一目标条件；"
+                f"目标={charge_item!r}，实际标签={final_tags!r}"
+            )
+        if not final_tags and charge_item not in values and not selected_in_dropdown:
+            raise AssertionError(
+                "高级搜索收费项点击后没有可验证的选中状态；"
+                f"目标={charge_item!r}，输入值={values!r}，"
+                f"下拉选中状态={selected_in_dropdown}，字段={field.inner_text()!r}"
+            )
+
+    def _search_advanced_business_key(
+        self, *, billing_month: str, room_path: str, charge_item: str | None
+    ) -> None:
+        visible_drawers = self.frame.locator(".el-drawer:visible").filter(
+            has_text="高级搜索"
+        )
+        if visible_drawers.count() > 1:
+            raise AssertionError(
+                f"账单中心可见高级搜索抽屉应唯一，实际 {visible_drawers.count()} 个。"
+            )
+        # Reuse an already-open advanced-search panel.  Re-running the top
+        # search while this drawer is open matches two Search buttons and can
+        # leave stale room conditions active between serial parameter cases.
+        drawer = (
+            visible_drawers.first
+            if visible_drawers.count() == 1
+            else self._open_advanced_search()
+        )
+        # The Bill Center room tree can remain empty when opened after the
+        # charge-item and month widgets have been changed. Select the room
+        # first, then set the month and charge item; finally re-check that all
+        # three conditions survived the component refreshes. The separate
+        # “关联对象” condition is intentionally untouched.
+        self._select_advanced_room(drawer, room_path, billing_month)
+        drawer = self._set_advanced_billing_month(drawer, billing_month)
+        if charge_item:
+            self._select_advanced_charge_item(drawer, charge_item)
+        self._verify_advanced_business_key(
+            drawer,
+            billing_month=billing_month,
+            room_path=room_path,
+            charge_item=charge_item,
+        )
+        expect(drawer).to_be_visible(timeout=10_000)
+        search_button = self.require_single(
+            drawer.get_by_role("button", name="搜索", exact=True),
+            "账单中心高级搜索提交按钮",
+        )
+        expect(search_button).to_be_visible(timeout=10_000)
+        expect(search_button).to_be_enabled(timeout=10_000)
+        from src.pages.portal_page import PortalPage
+
+        PortalPage(self.page).collapse_customer_service()
+        try:
+            search_button.click(timeout=5_000)
+        except PlaywrightError as exc:
+            if "intercepts pointer events" not in str(exc):
+                raise
+            # The search is a read-only filter action. Dispatch the click on
+            # the exact, unique enabled button only when a floating portal
+            # widget has been proven to intercept the pointer.
+            search_button.evaluate("element => element.click()")
+        expect(self.frame.locator(".el-loading-mask:visible")).to_have_count(
+            0, timeout=60_000
+        )
+
+    def _verify_advanced_business_key(
+        self,
+        drawer: Locator,
+        *,
+        billing_month: str,
+        room_path: str,
+        charge_item: str | None,
+    ) -> None:
+        """Fail closed if a cascading filter refresh drops a business key."""
+        starts = drawer.get_by_placeholder("选择开始日期")
+        ends = drawer.get_by_placeholder("选择结束日期")
+        if not starts.count() or not ends.count():
+            raise AssertionError("高级搜索账期起止控件在筛选联动后消失。")
+        expect(starts.first).to_have_value(billing_month)
+        expect(ends.first).to_have_value(billing_month)
+
+        parts = [part for part in room_path.split("/") if part]
+        if not parts:
+            raise ValueError(f"房间路径不能为空：{room_path!r}")
+        object_selectors = drawer.locator(
+            'input[readonly][placeholder="请选择"]:visible'
+        )
+        room_filter = None
+        for index in range(object_selectors.count()):
+            candidate = object_selectors.nth(index)
+            if candidate.input_value().startswith("收费对象-"):
+                room_filter = candidate.locator(
+                    "xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' jie-dialog-label ')][1]"
+                )
+                break
+        if room_filter is None:
+            room_label = self.require_single(
+                drawer.get_by_text("房间名称", exact=True),
+                "高级搜索房间名称标签（联动复核）",
+            )
+            room_filter = room_label.locator(
+                "xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' jie-dialog-label ')][1]"
+            )
+        selected_rooms = room_filter.locator(".tags-info .el-tag:visible")
+        room_values: list[str] = []
+        for index in range(selected_rooms.count()):
+            tag = selected_rooms.nth(index)
+            content = tag.locator(".el-tag__content")
+            text = content.inner_text() if content.count() == 1 else tag.inner_text()
+            room_values.append(" ".join(text.split()))
+        if room_values not in ([parts[-1]], [room_path]):
+            raise AssertionError(
+                "高级搜索筛选联动后房间条件未保留或不唯一；"
+                f"目标={room_path!r}，实际={room_values!r}。"
+            )
+
+        if charge_item:
+            fields = drawer.locator(".jie-dialog-label").filter(
+                has_text=re.compile(r"^收费项")
+            )
+            field = self.require_single(fields, "高级搜索收费项字段（联动复核）")
+            tags = field.locator(".el-tag__content").all_inner_texts()
+            tags = [" ".join(text.split()) for text in tags if text.strip()]
+            field_text = " ".join(field.inner_text().split())
+            if charge_item not in field_text or (tags and tags != [charge_item]):
+                raise AssertionError(
+                    "高级搜索筛选联动后收费项条件未保留或不唯一；"
+                    f"目标={charge_item!r}，标签={tags!r}，字段文本={field_text!r}。"
+                )
 
     def _filter_billing_month(self, billing_month: str) -> None:
         start_month = self.require_single(
@@ -1442,11 +1977,63 @@ class BillingCenterPage(BasePage):
         return rows
 
     def _read_bill_amounts(self, row: Locator) -> dict[str, Decimal]:
+        headers = self.frame.locator(".el-table__header-wrapper th").evaluate_all(
+            """els => els.filter(el => el.getClientRects().length).map(el => ({
+                text: el.innerText.trim().replace(/\s+/g, ' '),
+                className: el.className
+            }))"""
+        )
+
+        def header_key(label: str, parent: str | None = None) -> str:
+            exact = [item for item in headers if item["text"] == label]
+            if parent is not None:
+                parent_ids = {
+                    match.group(1)
+                    for item in headers
+                    if item["text"] == parent
+                    for match in [re.search(r"(?:^|\s)el-table_\d+_column_(\d+)(?:\s|$)", item["className"])]
+                    if match
+                }
+                if len(parent_ids) != 1:
+                    raise AssertionError(
+                        f"金额表头分组 {parent!r} 应唯一，实际列号={sorted(parent_ids)}"
+                    )
+                parent_id = next(iter(parent_ids))
+                child_ids = {
+                    match.group(1)
+                    for item in exact
+                    for match in [re.search(
+                        rf"(?:^|\s)el-table_\d+_column_{parent_id}_column_(\d+)(?:\s|$)",
+                        item["className"],
+                    )]
+                    if match
+                }
+                if len(child_ids) != 1:
+                    raise AssertionError(
+                        f"{parent} / {label} 金额表头应唯一，实际列号={sorted(child_ids)}"
+                    )
+                return f"column_{parent_id}_column_{next(iter(child_ids))}"
+
+            column_ids = {
+                match.group(1)
+                for item in exact
+                for match in [re.search(
+                    r"(?:^|\s)el-table_\d+_column_(\d+)(?:\s|$)",
+                    item["className"],
+                )]
+                if match
+            }
+            if len(column_ids) != 1:
+                raise AssertionError(
+                    f"{label}金额表头应唯一，实际列号={sorted(column_ids)}"
+                )
+            return f"column_{next(iter(column_ids))}"
+
         def amount_by_column(description: str, column_key: str) -> Decimal:
             candidates = row.locator("td")
             matched = []
             pattern = re.compile(
-                rf"\b(?:el-table_\d+_)?{re.escape(column_key)}\b"
+                rf"(?:^|\s)(?:el-table_\d+_)?{re.escape(column_key)}(?:\s|$)"
             )
             for index in range(candidates.count()):
                 candidate = candidates.nth(index)
@@ -1470,15 +2057,15 @@ class BillingCenterPage(BasePage):
                 ) from exc
 
         return {
-            # 页面真实复合列：本金分组 column_13 下的应收/减免，
-            # column_12 为包含本金与违约金的合计欠款（当前应缴）。
+            # 表格前端重构会调整 Element UI 内部列号；从可见表头按业务标签
+            # 识别本金应收、本金减免和合计欠款，避免依赖固定列号。
             "original_amount": amount_by_column(
-                "本金应收", "column_13_column_14"
+                "本金应收", header_key("应收", "本金")
             ),
             "discount_amount": amount_by_column(
-                "本金减免", "column_13_column_15"
+                "本金减免", header_key("减免", "本金")
             ),
             "receivable_amount": amount_by_column(
-                "合计欠款", "column_12"
+                "合计欠款", header_key("合计欠款")
             ),
         }

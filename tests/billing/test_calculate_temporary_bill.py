@@ -12,6 +12,7 @@ from playwright.sync_api import Page, expect
 
 from src.config.excel_data import load_case_reference, load_excel_test_data
 from src.config.settings import settings
+from src.domain.bill_presence import BillKey, ensure_no_active_bill, skip_existing_active_bill
 from src.pages.billing_calculation_page import (
     BillingCalculationPage,
     TemporaryCalculationData,
@@ -116,6 +117,36 @@ def test_calculate_temporary_bill_then_cleanup(
             settings.master_customer_id,
             environment=settings.test_environment,
             account_role=account_role,
+        )
+        # 运行前按账期+房间+收费项只读预检：已有有效账单则保留原数据并跳过；
+        # 预检查询本身失败时也跳过（失败安全）。
+        portal.open_billing_center()
+        billing_center.wait_until_ready()
+
+        def _query_bills() -> list[str]:
+            billing_center.select_project(data.project_name)
+            return billing_center.get_bill_numbers_by_month_room_charge_item(
+                billing_month=data.billing_month,
+                room_path=data.room_path,
+                charge_item=data.charge_item,
+                allow_empty=True,
+            )
+
+        def _reopen_billing_center() -> None:
+            portal.open_billing_center()
+            billing_center.wait_until_ready()
+
+        ensure_no_active_bill(
+            case_id=case_id,
+            entrypoint="计费出账",
+            key=BillKey(
+                billing_month=data.billing_month,
+                room_path=data.room_path,
+                charge_item=data.charge_item,
+            ),
+            record_property=record_property,
+            query=_query_bills,
+            reset=_reopen_billing_center,
         )
         portal.open_billing_calculation()
         calculation.wait_until_ready()
