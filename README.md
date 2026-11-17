@@ -1,4 +1,4 @@
-# 云收费 UI 自动化回归 Demo
+# 云收费 UI 自动化回归
 
 当前项目已改为 **Python + pytest + Playwright**，并采用 Page Object（PO）设计模式。
 
