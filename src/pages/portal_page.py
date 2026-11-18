@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from time import monotonic
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
@@ -125,39 +126,38 @@ class PortalPage:
         # 目标客户由 Home 路由参数维持，使用已人工验证的稳定入口。
         home_url = self._customer_home_url(base_url, master_customer_id)
         self.page.goto(home_url, wait_until="commit")
-        if self._wait_for_login_or_portal() == "login":
+        login_attempted = False
+        try:
+            state = self._wait_for_login_or_portal(timeout=30_000)
+        except AssertionError:
+            # The Home hash can load before either the login redirect or the
+            # portal shell is rendered. If we are still on this customer Home
+            # route, recover through the configured login once instead of
+            # failing before the recovery path can run.
+            if "#/Home" not in self.page.url:
+                raise
+            state = "unknown"
+        if state in {"login", "unknown"}:
             self._login_with_local_credentials(
                 base_url, master_customer_id, home_url, environment, account_role
             )
+            login_attempted = True
         self.dismiss_home_overlays()
         self.collapse_customer_service()
         try:
             expect(self._cloud_billing_entry()).to_be_visible(timeout=30_000)
         except AssertionError:
-            # The portal can show an expired-local-user prompt after the first
-            # successful callback and route back to login. Refill once in the
-            # same browser context, then stop instead of looping indefinitely.
-            # A stale session can keep the URL at Home while rendering only a
-            # blank shell, so URL-based detection alone is insufficient here.
-            # Force the single normal-login recovery whenever the portal menu
-            # is still hidden.
+            if login_attempted:
+                raise
+            # If a previously rendered portal loses its menu, allow one
+            # credential-based recovery. Never retry indefinitely.
             self._login_with_local_credentials(
                 base_url, master_customer_id, home_url, environment, account_role
             )
+            login_attempted = True
             self.dismiss_home_overlays()
             self.collapse_customer_service()
-            try:
-                expect(self._cloud_billing_entry()).to_be_visible(timeout=30_000)
-            except AssertionError:
-                # Standard1 may report a transient "账号在其他地方登录"
-                # after the login callback even though the session is usable.
-                # Re-request the explicit customer Home route once, instead
-                # of treating that notice as a definitive login failure.
-                self.page.goto(home_url, wait_until="commit")
-                self.page.wait_for_timeout(5_000)
-                self.dismiss_home_overlays()
-                self.collapse_customer_service()
-                expect(self._cloud_billing_entry()).to_be_visible(timeout=30_000)
+            expect(self._cloud_billing_entry()).to_be_visible(timeout=30_000)
 
     def _login_with_local_credentials(
         self,
@@ -198,23 +198,27 @@ class PortalPage:
                 localStorage.clear();
             }"""
         )
-        if self._wait_for_login_or_portal() != "login":
+        if self._wait_for_login_or_portal(timeout=30_000) != "login":
             raise AssertionError("门户未显示登录表单。")
         self._submit_login(username, password, captcha)
         saw_loading = False
-        for _ in range(30):
+        callback_deadline = monotonic() + 30
+        while True:
             if "#/Home" in self.page.url:
                 break
             if "#/Loading" in self.page.url:
                 saw_loading = True
                 break
-            self.page.wait_for_timeout(500)
+            remaining = callback_deadline - monotonic()
+            if remaining <= 0:
+                break
+            self.page.wait_for_timeout(min(250, max(1, int(remaining * 1000))))
         if saw_loading:
             try:
-                self.page.wait_for_url("**#/Home**", timeout=15_000)
+                self.page.wait_for_url("**#/Home**", timeout=30_000)
             except PlaywrightTimeoutError:
                 self.page.goto(home_url, wait_until="commit")
-        if self._wait_for_login_or_portal(timeout=15_000) != "portal":
+        if self._wait_for_login_or_portal(timeout=30_000) != "portal":
             errors = self._visible_login_errors()
             detail = f"；页面提示：{'；'.join(errors)}" if errors else ""
             raise AssertionError(f"登录提交后未进入门户{detail}")
@@ -230,19 +234,29 @@ class PortalPage:
             raise AssertionError("登录后的门户未恢复首页。")
 
     def _wait_for_login_or_portal(self, timeout: int = 15_000) -> str:
-        """Wait for a rendered portal menu or a rendered login form."""
-        attempts = max(1, timeout // 500)
-        for _ in range(attempts):
+        """Wait up to the requested wall-clock time for login or portal DOM.
+
+        Use a monotonic deadline rather than a fixed number of iterations:
+        locator checks take variable time, so the old attempt count could
+        expire well before the advertised timeout.
+        """
+        deadline = monotonic() + max(0, timeout) / 1000
+        while True:
             username = self.page.locator(
                 'input.el-input__inner[placeholder*="用户名"]:visible'
             )
             password = self.page.locator(
                 'input.el-input__inner[type="password"]:visible'
             )
+            login_button = self.page.locator("button:visible").filter(
+                has_text=re.compile(r"登\s*录")
+            )
             is_login_form = (
                 "#/login" in self.page.url
                 and username.count() == 1
                 and password.count() == 1
+                and login_button.count() == 1
+                and login_button.is_visible()
             )
             if is_login_form:
                 return "login"
@@ -251,12 +265,12 @@ class PortalPage:
             # unnecessary login attempt and long waits. Require the actual
             # cloud-billing entry to be visible; overlays are dismissed by the
             # caller after this readiness check.
-            try:
-                if self._cloud_billing_entry().is_visible():
-                    return "portal"
-            except Exception:
-                pass
-            self.page.wait_for_timeout(250)
+            if self._cloud_billing_entry().is_visible():
+                return "portal"
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            self.page.wait_for_timeout(min(200, max(1, int(remaining * 1000))))
         raise AssertionError(
             f"等待门户或登录表单超时，当前URL={self.page.url!r}"
         )

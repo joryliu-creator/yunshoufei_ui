@@ -215,23 +215,6 @@ def test_create_workbench_room_bill_verify_and_cleanup(
     scenario = _scenario(scenario_id)
     if scenario.charge_type not in {"周期类", "仪表类"}:
         pytest.fail(f"场景 {scenario_id} 的收费类型不在本批次范围内。")
-    if scenario_id.startswith("YSF-SCENE-PUBLIC-SHARE-METER-BILL-"):
-        # A read-only probe of room 1207 showed that this archive's bill drawer
-        # does not default the room (unlike ordinary rooms and periodic-share
-        # rooms). The established Workbench rule is to trust the auto-filled
-        # room and not reselect it; do not create a bill with a blank/ambiguous
-        # charge object until the UI behavior is confirmed.
-        record_property(
-            "workbench_preflight_blocker",
-            f"{scenario.room_path}: 公摊仪表房间的新增账单抽屉未自动带入房间；"
-            "按既定规则未手动重选，未创建。",
-        )
-        print(
-            f"[workbench-batch] SKIP room={scenario.room_path} "
-            "reason=public-meter drawer did not auto-fill room",
-            flush=True,
-        )
-        pytest.skip("仪表公摊房间抽屉未自动带入房间，按既定约束保护性跳过。")
     expected_original, expected_source = _expected_amount(scenario)
     expected_discount = Decimal(scenario.expected_discount_amount or "0")
     expected_receivable = Decimal(scenario.expected_receivable_amount)

@@ -1,5 +1,7 @@
 from copy import copy
+import argparse
 from decimal import Decimal
+from datetime import date
 from pathlib import Path
 import sys
 
@@ -115,6 +117,122 @@ WORKBENCH_CASE = [
     "有效",
     "已在Standard1/客户93537实际验证；2026-08账期；自动带入房间，不在新增账单抽屉重复选择",
 ]
+
+
+# Workbench-specific cases below correspond only to room scenarios that have
+# passed a real create -> verify -> void/batch-delete -> zero-result run.
+# Public-share rooms are deliberately absent until their Workbench behavior is
+# ready for regression.
+WORKBENCH_VERIFIED_SCENARIO_IDS = (
+    tuple(
+        f"YSF-SCENE-PERIODIC-BILL-{room}"
+        for room in (
+            *[str(number) for number in range(1002, 1012)],
+            *[str(number) for number in range(1048, 1059)],
+        )
+    )
+    + tuple(
+        f"YSF-SCENE-METER-BILL-{room}"
+        for room in (
+            "1032", "1033", "1034", "1035", "1037", "1038",
+            "1040", "1041", "1042", "1043", "1045", "1046",
+        )
+    )
+)
+
+
+def workbench_room_case_rows(scenario_sheet):
+    """Build case rows only for the explicit, verified non-share run set."""
+    headers = {
+        str(cell.value).splitlines()[0].rstrip("*").strip(): column
+        for column, cell in enumerate(scenario_sheet[1], 1)
+        if cell.value is not None
+    }
+    required = {
+        "场景编号", "环境", "客户号", "项目名称", "房间路径", "收费类型",
+        "收费项", "收费标准", "建议测试账期", "预期原始金额", "预期减免金额",
+        "预期应收金额", "维护状态", "是否启用",
+    }
+    missing = required - set(headers)
+    if missing:
+        raise ValueError(f"收费场景配置缺少工作台用例字段：{sorted(missing)}")
+
+    def read(row, name):
+        return str(scenario_sheet.cell(row, headers[name]).value or "").strip()
+
+    row_by_id = {}
+    for row in range(2, scenario_sheet.max_row + 1):
+        scenario_id = read(row, "场景编号")
+        if scenario_id:
+            if scenario_id in row_by_id:
+                raise ValueError(f"收费场景编号重复：{scenario_id}")
+            row_by_id[scenario_id] = row
+
+    cases = []
+    for scenario_id in WORKBENCH_VERIFIED_SCENARIO_IDS:
+        row = row_by_id.get(scenario_id)
+        if row is None:
+            raise ValueError(f"缺少已通过工作台验证的收费场景：{scenario_id}")
+        environment = read(row, "环境")
+        customer_id = read(row, "客户号")
+        project = read(row, "项目名称")
+        room_path = read(row, "房间路径")
+        charge_type = read(row, "收费类型")
+        charge_item = read(row, "收费项")
+        charge_standard = read(row, "收费标准")
+        billing_month = read(row, "建议测试账期")
+        original = read(row, "预期原始金额")
+        discount = read(row, "预期减免金额") or "0.00"
+        receivable = read(row, "预期应收金额")
+        status = read(row, "维护状态")
+        enabled = read(row, "是否启用")
+        if (environment, customer_id, project) != (
+            "standard1", "93537", "云收费UI自动化"
+        ):
+            raise ValueError(f"工作台已验证场景环境/客户/项目不符：{scenario_id}")
+        if billing_month != "2026-08" or enabled != "是" or not status.startswith("已核验"):
+            raise ValueError(f"工作台已验证场景账期/状态不符：{scenario_id}")
+        if scenario_id.startswith("YSF-SCENE-PERIODIC-BILL-"):
+            expected_type = "周期类"
+        elif scenario_id.startswith("YSF-SCENE-METER-BILL-"):
+            expected_type = "仪表类"
+        else:
+            raise ValueError(f"本次工作台用例清单不接受公摊场景：{scenario_id}")
+        if charge_type != expected_type:
+            raise ValueError(f"场景收费类型与编号不一致：{scenario_id}")
+
+        room = room_path.rsplit("/", 1)[-1]
+        case_id = f"YSF-WORKBENCH-BILL-{room}"
+        steps = (
+            "1. 通过顶部导航进入云收费，点击左侧‘业务办理收费台’。\n"
+            f"2. 选择‘按房间’，输入‘{room}’，点击‘立即查询’，等待唯一结果后点击‘{room_path}’，等待房间收费对象档案加载。\n"
+            f"3. 在‘账单信息’模块点击‘新增账单’；核验收费对象为‘房间’且房间已默认带入‘{room_path}’，不要重新选择房间。\n"
+            f"4. 将账期设为‘{billing_month}’，应收日期设为‘2026-08-31’；点击‘新增收费项’，搜索并选择‘{charge_item}’，点击抽屉右下角‘确定’。\n"
+            f"5. 等待收费明细出现，点击该行‘编辑’，将最晚缴款日设为‘2026-08-31’，点击该行‘保存’；核对收费项、收费标准‘{charge_standard}’及金额后提交账单。\n"
+            "6. 等待房间档案提示‘账单成功数：1’。进入账单中心，按‘收费对象-房间’选择目标房间，再设置账期和收费项；确认三个条件均保留后搜索，唯一核对金额。账单编号仅作证据，不作筛选条件。\n"
+            "7. 按账期+房间+收费项唯一定位本次账单，批量作废并填写作废原因；按相同业务键复查后批量删除，再次查询并确认结果为0。若创建前已存在同业务键账单或结果不唯一，停止并保护既有数据。"
+        )
+        expected = (
+            f"新增账单抽屉默认带入收费对象‘房间’和房间‘{room_path}’，无需重新选择；"
+            f"创建成功数为1。账期为{billing_month}、应收日期和最晚缴款日为2026-08-31，"
+            f"收费类型/收费项/收费标准为{charge_type}/{charge_item}/{charge_standard}；"
+            f"原始金额{original}元、减免金额{discount}元、应收金额{receivable}元，"
+            "与收费场景独立预期一致。清理后按相同业务键复查为0条。"
+        )
+        cases.append([
+            case_id, "云收费", "工作台/业务办理收费台", "房间档案新增账单",
+            f"{room}房间通过工作台房间档案新增{charge_type}账单并清理",
+            "P0", "正向", "是",
+            f"Standard1 客户{customer_id}，使用 DEFAULT 测试管理员；{room_path}已关联{charge_item}及有效收费标准‘{charge_standard}’；"
+            f"创建前按{billing_month}账期、房间和收费项确认无重复账单。",
+            steps, f"SCENARIO_ID={scenario_id}", expected,
+            "DEFAULT / 测试管理员", "新增后清理", "是-需确认", "已自动化",
+            "依赖对应房间、客户、收费项、有效收费标准及目标账期；本地创建/清理/删除安全开关必须开启",
+            "regression,billing,workbench,create-bill,side-effect", "有效",
+            f"{date.today().isoformat()} 已在 Standard1/客户{customer_id} 实际验证通过并清理；"
+            "档案默认房间，不在新增账单抽屉重复选择。",
+        ])
+    return cases
 
 
 CALCULATION_CASE = [
@@ -1072,16 +1190,57 @@ def ensure_charge_scenario_sheet(workbook):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="生成或维护云收费自动化回归用例工作簿")
+    parser.add_argument(
+        "--only-workbench-cases",
+        action="store_true",
+        help="只更新本轮已核验的工作台用例，不重建其他工作表或场景数据。",
+    )
+    args = parser.parse_args()
+
+    if args.only_workbench_cases:
+        workbook = load_workbook(OUTPUT)
+        try:
+            if "用例清单" not in workbook.sheetnames or "收费场景配置" not in workbook.sheetnames:
+                raise ValueError("当前工作簿缺少用例清单或收费场景配置工作表。")
+            cases = workbook["用例清单"]
+            scenario_sheet = workbook["收费场景配置"]
+            donor_row = find_or_empty_row(cases, WORKBENCH_CASE[0])
+            if donor_row > cases.max_row:
+                raise ValueError("找不到既有工作台用例样式行，停止写入。")
+            written_rows = []
+            for case in workbench_room_case_rows(scenario_sheet):
+                case_row = find_or_empty_row(cases, case[0])
+                copy_row_style(cases, max(2, case_row - 1), case_row, 20)
+                for column, value in enumerate(case, 1):
+                    cases.cell(case_row, column, value)
+                cases.row_dimensions[case_row].height = 210
+                written_rows.append(case_row)
+            cases.auto_filter.ref = f"A1:T{cases.max_row}"
+            workbook.save(OUTPUT)
+            print(f"updated={OUTPUT}")
+            print(f"workbench_cases={len(written_rows)} rows={written_rows}")
+        finally:
+            workbook.close()
+        return
+
     source = resolve_source()
     workbook = load_workbook(source)
 
+    scenarios = ensure_charge_scenario_sheet(workbook)
     cases = workbook["用例清单"]
     cases.cell(1, 11, "场景引用/覆盖项")
     case_rows = []
     # CASE is the retired pre-matrix Demo.  Do not reinsert it when rebuilding
     # the workbook; the formal 1001 Bill Center case is maintained as
     # YSF-BILL-PERIODIC-001 by the entrypoint matrix scripts.
-    for case in [*CALCULATION_CASES, WORKBENCH_CASE, *METER_CASES, *TEMPORARY_CASES]:
+    for case in [
+        *CALCULATION_CASES,
+        WORKBENCH_CASE,
+        *workbench_room_case_rows(scenarios),
+        *METER_CASES,
+        *TEMPORARY_CASES,
+    ]:
         case_row = find_or_empty_row(cases, case[0])
         copy_row_style(cases, max(2, case_row - 1), case_row, 20)
         for column, value in enumerate(case, 1):
@@ -1101,8 +1260,6 @@ def main():
         for column, value in enumerate(item, 1):
             accounts.cell(account_row, column, value)
         accounts.row_dimensions[account_row].height = 42
-
-    scenarios = ensure_charge_scenario_sheet(workbook)
 
     preferred_order = [
         "用例清单", "收费场景配置", "运行参数", "账号角色",
